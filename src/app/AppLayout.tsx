@@ -20,7 +20,7 @@ const { Header, Sider, Content } = Layout
 const navItems = [
   { key: '/dashboard', label: 'Dashboard', icon: <IconDashboard /> },
   { key: '/sessions', label: 'Sessions', icon: <IconHistory /> },
-  { key: '/providers', label: 'Providers', icon: <IconStorage />, disabled: true },
+  { key: '/providers', label: 'Providers', icon: <IconStorage /> },
   { key: '/clients', label: 'Clients', icon: <IconSafe />, disabled: true },
   { key: '/routes', label: 'Routes & Models', icon: <IconCommon />, disabled: true },
   { key: '/usage', label: 'Usage', icon: <IconDashboard /> },

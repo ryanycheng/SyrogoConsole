@@ -192,3 +192,185 @@ export interface LatencyTrace {
 export interface LatencyTracesResponse {
   items?: LatencyTrace[]
 }
+
+export type ProviderProtocol = 'mock' | 'openai_chat' | 'openai_responses' | 'anthropic_messages'
+export type NullableBoolean = boolean | null
+export type ProviderUsageEstimationMode = '' | 'heuristic' | (string & {})
+export type ProviderQuotaReset = 'rolling' | 'fixed'
+export type ProviderQuotaFixedPeriod = 'interval' | 'daily' | 'weekly'
+
+export interface ProviderCapabilities {
+  responses_previous_response_id: NullableBoolean
+  responses_builtin_tools: NullableBoolean
+  responses_tool_result_status_error: NullableBoolean
+  responses_assistant_history_native: NullableBoolean
+  usage_estimation: boolean
+  usage_estimation_mode: ProviderUsageEstimationMode
+}
+
+export interface ProviderQuotaFixedSchedule {
+  period: ProviderQuotaFixedPeriod
+  anchor?: string
+  time?: string
+  timezone?: string
+  weekday?: number
+}
+
+export interface ProviderQuotaWindowConfig {
+  name: string
+  reset?: ProviderQuotaReset
+  duration?: string
+  fixed?: ProviderQuotaFixedSchedule
+  max_requests?: number
+  max_tokens?: number
+}
+
+export interface ProviderQuotaResetAllConfig {
+  enabled: boolean
+  schedule: ProviderQuotaFixedSchedule & { duration?: string }
+}
+
+export interface ProviderQuotaConfig {
+  enabled: boolean
+  windows: ProviderQuotaWindowConfig[]
+  cooldown: string
+  probe_interval: string
+  reset_all: ProviderQuotaResetAllConfig
+}
+
+export interface ProviderProxyConfig {
+  url: string
+}
+
+export interface ProviderModel {
+  name: string
+  aliases: string[]
+}
+
+export interface ProviderResource {
+  name: string
+  models: ProviderModel[]
+  protocol: ProviderProtocol
+  endpoint: string
+  auth_token: string
+  tag: string
+  enabled: boolean
+  capabilities: ProviderCapabilities
+  quota: ProviderQuotaConfig
+  proxy: ProviderProxyConfig
+}
+
+export interface ProvidersResponse {
+  items: ProviderResource[]
+}
+
+export interface ProviderUsageMetrics extends UsageRow {
+  value: string
+}
+
+export interface ProviderHealthMetrics {
+  outbound: string
+  state: string
+  last_success_at: string
+  last_failure_at: string
+  last_error_kind?: string
+  consecutive_failures: number
+  next_probe_at?: string
+}
+
+export interface ProviderQuotaWindowMetrics {
+  name: string
+  reset?: ProviderQuotaReset
+  fixed_period?: ProviderQuotaFixedPeriod
+  duration?: string
+  max_requests?: number
+  used_requests?: number
+  remaining_requests?: number
+  max_tokens?: number
+  used_tokens?: number
+  remaining_tokens?: number
+  reset_at?: string
+  /** Legacy request-only aliases returned by older Core versions. */
+  limit?: number
+  used?: number
+  remaining?: number
+}
+
+export interface ProviderQuotaMetrics {
+  outbound?: string
+  enabled: boolean
+  state: string
+  cooldown_until?: string
+  next_probe_at: string
+  last_quota_exceeded_at?: string
+  last_success_at: string
+  windows: ProviderQuotaWindowMetrics[]
+}
+
+export interface ProviderTimelineBucket {
+  start: string
+  end: string
+  request_count: number
+  success_count: number
+  error_count: number
+  state: 'empty' | 'success' | 'failed' | 'mostly_failed' | 'partial_failed'
+}
+
+export interface ProviderMetricsItem {
+  provider: ProviderResource
+  usage: ProviderUsageMetrics
+  health?: ProviderHealthMetrics
+  quota?: ProviderQuotaMetrics
+  timeline: ProviderTimelineBucket[]
+}
+
+export interface ProvidersMetricsResponse {
+  items: ProviderMetricsItem[]
+  hours: 1 | 6 | 12 | 24 | 48
+  bucket_minutes: number
+  bucket_count: number
+}
+
+export interface ProviderCheckRequest {
+  name: string
+  model: string
+  provider?: ProviderResource
+}
+
+export interface RouteResource {
+  target_model?: string
+  model_map?: Record<string, string>
+  [key: string]: unknown
+}
+
+export interface RoutesResponse {
+  items?: RouteResource[]
+  routes?: RouteResource[]
+  [key: string]: unknown
+}
+
+export interface ProviderCheckResponse {
+  name: string
+  ok: boolean
+  state: string
+  latency_ms: number
+  checked_at: string
+  error?: string
+}
+
+export interface ConfigMutationResponse {
+  ok: boolean
+  applied: boolean
+  restart_required?: boolean
+  reason?: string
+  history_id?: string
+}
+
+export interface ConfigApplyResponse {
+  ok: boolean
+  applied: boolean
+  restart_required: boolean
+  reason?: string
+  history_id?: string
+  quota_state_reset: boolean
+}

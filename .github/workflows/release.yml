@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Console SemVer from package.json, without a v prefix
+        required: true
+        type: string
+      syrogo_version_range:
+        description: Supported Syrogo Core SemVer range, for example >=0.15.0 <0.16.0
+        required: true
+        type: string
+      dry_run:
+        description: Build artifacts without creating a tag or GitHub Release
+        required: true
+        default: true
+        type: boolean
+      publish_confirmation:
+        description: Enter PUBLISH SYROGO CONSOLE when dry_run is disabled
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Releases must be prepared from main." >&2
+          exit 1
+
+      - name: Validate publish confirmation
+        if: inputs.dry_run == false && inputs.publish_confirmation != 'PUBLISH SYROGO CONSOLE'
+        run: |
+          echo "The publish confirmation is incorrect." >&2
+          exit 1
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run type checking
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm run test
+
+      - name: Build production assets
+        run: npm run build
+        env:
+          VITE_SYROGO_API_BASE: ${{ vars.SYROGO_API_BASE }}
+
+      - name: Generate release metadata
+        env:
+          CONSOLE_VERSION: ${{ inputs.version }}
+          SYROGO_VERSION_RANGE: ${{ inputs.syrogo_version_range }}
+        run: npm run release:metadata -- "$CONSOLE_VERSION" "$SYROGO_VERSION_RANGE" "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Ensure release tag does not exist
+        env:
+          CONSOLE_VERSION: ${{ inputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${CONSOLE_VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${CONSOLE_VERSION} already exists." >&2
+            exit 1
+          fi
+
+      - name: Package production assets
+        env:
+          CONSOLE_VERSION: ${{ inputs.version }}
+        run: |
+          mkdir -p release
+          tar -C dist -czf "release/syrogo-console_v${CONSOLE_VERSION}.tar.gz" .
+          cd release
+          sha256sum "syrogo-console_v${CONSOLE_VERSION}.tar.gz" > "syrogo-console_v${CONSOLE_VERSION}_checksums.txt"
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: syrogo-console-v${{ inputs.version }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: inputs.dry_run == false && inputs.publish_confirmation == 'PUBLISH SYROGO CONSOLE'
+    needs: package
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Download release candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: syrogo-console-v${{ inputs.version }}
+          path: release
+
+      - name: Write release notes
+        env:
+          CONSOLE_VERSION: ${{ inputs.version }}
+          SYROGO_VERSION_RANGE: ${{ inputs.syrogo_version_range }}
+        run: |
+          printf 'SyrogoConsole %s\n\nSupported Syrogo Core versions: `%s`\n' "$CONSOLE_VERSION" "$SYROGO_VERSION_RANGE" > release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONSOLE_VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "v${CONSOLE_VERSION}" \
+            release/syrogo-console_v*.tar.gz \
+            release/syrogo-console_v*_checksums.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "SyrogoConsole v${CONSOLE_VERSION}" \
+            --notes-file release-notes.md \
+            --verify-tag=false
