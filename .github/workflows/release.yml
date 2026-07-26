@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -25,21 +28,53 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.version }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      syrogo_version_range: ${{ steps.release.outputs.syrogo_version_range }}
+      publish: ${{ steps.release.outputs.publish }}
+    steps:
+      - id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SYROGO_VERSION_RANGE: ${{ inputs.syrogo_version_range }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
+            NEXT_PATCH="$MAJOR.$MINOR.$((PATCH + 1))"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "syrogo_version_range=>=$VERSION <$NEXT_PATCH" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "syrogo_version_range=$INPUT_SYROGO_VERSION_RANGE" >> "$GITHUB_OUTPUT"
+            if [[ "$INPUT_DRY_RUN" == "false" && "$INPUT_PUBLISH_CONFIRMATION" == "PUBLISH SYROGO CONSOLE" ]]; then
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
   package:
+    needs: metadata
     runs-on: ubuntu-latest
     steps:
-      - name: Require the main branch
-        if: github.ref != 'refs/heads/main'
+      - name: Require the main branch or a release tag
+        if: github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v')
         run: |
-          echo "Releases must be prepared from main." >&2
+          echo "Releases must be prepared from main or a v* tag." >&2
           exit 1
 
       - name: Validate publish confirmation
-        if: inputs.dry_run == false && inputs.publish_confirmation != 'PUBLISH SYROGO CONSOLE'
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == false && inputs.publish_confirmation != 'PUBLISH SYROGO CONSOLE'
         run: |
           echo "The publish confirmation is incorrect." >&2
           exit 1
@@ -74,13 +109,14 @@ jobs:
 
       - name: Generate release metadata
         env:
-          CONSOLE_VERSION: ${{ inputs.version }}
-          SYROGO_VERSION_RANGE: ${{ inputs.syrogo_version_range }}
+          CONSOLE_VERSION: ${{ needs.metadata.outputs.version }}
+          SYROGO_VERSION_RANGE: ${{ needs.metadata.outputs.syrogo_version_range }}
         run: npm run release:metadata -- "$CONSOLE_VERSION" "$SYROGO_VERSION_RANGE" "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-      - name: Ensure release tag does not exist
+      - name: Ensure release tag is available
+        if: github.event_name == 'workflow_dispatch'
         env:
-          CONSOLE_VERSION: ${{ inputs.version }}
+          CONSOLE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/v${CONSOLE_VERSION}" >/dev/null 2>&1; then
             echo "Tag v${CONSOLE_VERSION} already exists." >&2
@@ -89,7 +125,7 @@ jobs:
 
       - name: Package production assets
         env:
-          CONSOLE_VERSION: ${{ inputs.version }}
+          CONSOLE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           mkdir -p release
           tar -C dist -czf "release/syrogo-console_v${CONSOLE_VERSION}.tar.gz" .
@@ -99,14 +135,14 @@ jobs:
       - name: Upload release candidate
         uses: actions/upload-artifact@v4
         with:
-          name: syrogo-console-v${{ inputs.version }}
+          name: syrogo-console-v${{ needs.metadata.outputs.version }}
           path: release/
           if-no-files-found: error
           retention-days: 14
 
   publish:
-    if: inputs.dry_run == false && inputs.publish_confirmation == 'PUBLISH SYROGO CONSOLE'
-    needs: package
+    if: needs.metadata.outputs.publish == 'true'
+    needs: [metadata, package]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -115,20 +151,20 @@ jobs:
       - name: Download release candidate
         uses: actions/download-artifact@v4
         with:
-          name: syrogo-console-v${{ inputs.version }}
+          name: syrogo-console-v${{ needs.metadata.outputs.version }}
           path: release
 
       - name: Write release notes
         env:
-          CONSOLE_VERSION: ${{ inputs.version }}
-          SYROGO_VERSION_RANGE: ${{ inputs.syrogo_version_range }}
+          CONSOLE_VERSION: ${{ needs.metadata.outputs.version }}
+          SYROGO_VERSION_RANGE: ${{ needs.metadata.outputs.syrogo_version_range }}
         run: |
           printf 'SyrogoConsole %s\n\nSupported Syrogo Core versions: `%s`\n' "$CONSOLE_VERSION" "$SYROGO_VERSION_RANGE" > release-notes.md
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          CONSOLE_VERSION: ${{ inputs.version }}
+          CONSOLE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           gh release create "v${CONSOLE_VERSION}" \
             release/syrogo-console_v*.tar.gz \
