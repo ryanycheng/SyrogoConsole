@@ -17,6 +17,23 @@ function shortRevision(value: string) {
   return value.replace(/^sha256:/, '').slice(0, 12) || 'Unavailable'
 }
 
+async function fetchHistoryDiff(id: string): Promise<ConfigHistoryDiffResponse> {
+  const response = await apiGet<unknown>(`/admin/config/history/diff${buildQuery({ id })}`)
+  if (
+    !response ||
+    typeof response !== 'object' ||
+    !('id' in response) ||
+    !('current_content' in response) ||
+    !('history_content' in response) ||
+    typeof response.id !== 'string' ||
+    typeof response.current_content !== 'string' ||
+    typeof response.history_content !== 'string'
+  ) {
+    throw new Error('Core does not support history comparison. Upgrade and restart Syrogo Core, then try again.')
+  }
+  return response as ConfigHistoryDiffResponse
+}
+
 function reloadNotice(result: ConfigApplyResponse, action: 'apply' | 'rollback'): Notice {
   if (result.restart_required) return { type: 'warning', title: 'Restart required', content: result.reason || `The ${action} operation was saved but cannot be applied without restarting Core.` }
   if (!result.applied) return { type: 'warning', title: 'Configuration not applied', content: result.reason || `Core did not apply the ${action} operation.` }
@@ -50,7 +67,7 @@ export function SystemConfigPage() {
 
   const configQuery = useQuery({ queryKey: ['system-config'], queryFn: () => apiGet<ConfigReadResponse>('/admin/config'), refetchOnWindowFocus: false })
   const historyQuery = useQuery({ queryKey: ['config-history'], queryFn: () => apiGet<ConfigHistoryResponse>('/admin/config/history'), refetchOnWindowFocus: false })
-  const diffQuery = useQuery({ queryKey: ['config-history-diff', selectedHistoryID], queryFn: () => apiGet<ConfigHistoryDiffResponse>(`/admin/config/history/diff${buildQuery({ id: selectedHistoryID })}`), enabled: Boolean(selectedHistoryID), retry: false })
+  const diffQuery = useQuery({ queryKey: ['config-history-diff', selectedHistoryID], queryFn: () => fetchHistoryDiff(selectedHistoryID), enabled: Boolean(selectedHistoryID), retry: false })
 
   useEffect(() => {
     if (configQuery.data?.revision && !draft) setBaselineRevision(configQuery.data.revision)

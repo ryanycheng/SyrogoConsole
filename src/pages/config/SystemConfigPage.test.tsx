@@ -164,6 +164,25 @@ describe('SystemConfigPage', () => {
     expect(await screen.findByText('Applied with quota reset')).toBeInTheDocument()
   })
 
+  it('reports an unsupported Core response instead of leaving comparison loading', async () => {
+    mockApi()
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/admin/config')) return Promise.resolve(response(current))
+      if (url.endsWith('/admin/config/history')) return Promise.resolve(response(history))
+      if (url.includes('/admin/config/history/diff')) return Promise.resolve(response({ ok: true }))
+      return Promise.resolve(response({ ok: true }))
+    })
+    renderPage()
+    await screen.findByText('history-1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Compare' }))
+
+    expect(await screen.findByText('Unable to compare history')).toBeInTheDocument()
+    expect(screen.getByText(/Upgrade and restart Syrogo Core/)).toBeInTheDocument()
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+  })
+
   it('shows a stable unavailable state when Core has no config path', async () => {
     fetchMock.mockImplementation((input: RequestInfo | URL) => String(input).endsWith('/admin/config') ? Promise.resolve(response({ config_ready: false, redacted_content: '', revision: '', checksum: '' })) : Promise.resolve(response({ items: [] })))
     renderPage()
