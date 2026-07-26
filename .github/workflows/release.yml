@@ -37,15 +37,20 @@ jobs:
           set -euo pipefail
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           LOCK_VERSION="$(node -p "require('./package-lock.json').packages[''].version")"
+          SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          [[ "$PACKAGE_VERSION" =~ $SEMVER_RE ]] || { echo 'package version must be strict X.Y.Z SemVer' >&2; exit 1; }
           [ "$PACKAGE_VERSION" = "$LOCK_VERSION" ] || { echo 'package and lock versions differ' >&2; exit 1; }
           if [ "$GITHUB_EVENT_NAME" = push ]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'release tag must be strict vX.Y.Z SemVer' >&2; exit 1; }
             [ "$GITHUB_REF_NAME" = "v$PACKAGE_VERSION" ] || { echo 'tag, package, and lock versions must match' >&2; exit 1; }
           else
             [ '${{ inputs.dry_run }}' = true ] || { echo 'workflow_dispatch is dry-run only' >&2; exit 1; }
           fi
           CORE_VERSION="$PACKAGE_VERSION"
           CORE_RANGE=">=${PACKAGE_VERSION%.*}.0 <$(node -e "const [a,b]=process.argv[1].split('.').map(Number); process.stdout.write(a+'.'+(b+1)+'.0')" "$PACKAGE_VERSION")"
-          gh release view "v$CORE_VERSION" --repo ryanycheng/Syrogo >/dev/null || { echo "Core release v$CORE_VERSION does not exist" >&2; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            gh release view "v$CORE_VERSION" --repo ryanycheng/Syrogo >/dev/null || { echo "Core release v$CORE_VERSION does not exist" >&2; exit 1; }
+          fi
           echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
           echo "core_version=$CORE_VERSION" >> "$GITHUB_OUTPUT"
           echo "core_range=$CORE_RANGE" >> "$GITHUB_OUTPUT"
@@ -55,6 +60,7 @@ jobs:
       - run: npm ci
       - run: npm run lint && npm run typecheck && npm run test && npm run build
       - run: go test ./... && go vet ./...
+      - run: bash scripts/install_test.sh
       - name: Generate metadata
         run: npm run release:metadata -- "${{ steps.meta.outputs.version }}" "${{ steps.meta.outputs.core_version }}" "${{ steps.meta.outputs.core_range }}" "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

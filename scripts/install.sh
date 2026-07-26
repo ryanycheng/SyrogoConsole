@@ -7,6 +7,7 @@ INSTALL_ROOT="${SYROGO_CONSOLE_INSTALL_ROOT:-/opt/syrogo-console}"
 SYSTEMD_DIR="${SYROGO_SYSTEMD_DIR:-/etc/systemd/system}"
 SYSTEMCTL="${SYROGO_SYSTEMCTL:-systemctl}"
 CURL="${SYROGO_CURL:-curl}"
+BASH="${SYROGO_BASH:-bash}"
 ID="${SYROGO_ID:-id}"
 UNAME="${SYROGO_UNAME:-uname}"
 USERADD="${SYROGO_USERADD:-useradd}"
@@ -36,6 +37,15 @@ usage() {
   printf '%s\n' 'Usage: install.sh [--console-only|--with-core] [--version v0.16.3] [--archive file --checksum-file file] [--uninstall]'
 }
 
+normalize_version() {
+  local value="${1#v}"
+  case "$value" in
+    ''|*[!0-9.]*) fail '--version must be vX.Y.Z' ;;
+  esac
+  printf '%s' "$value" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || fail '--version must be vX.Y.Z'
+  printf 'v%s' "$value"
+}
+
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -50,7 +60,9 @@ parse_args() {
       *) fail "unknown argument: $1" ;;
     esac
   done
-  [ -z "$ARCHIVE" ] || [ -z "$VERSION" ] || fail '--archive and --version cannot be combined'
+  [ -z "$ARCHIVE" ] || [ -n "$VERSION" ] || fail 'local archives require --version vX.Y.Z'
+  [ -z "$CHECKSUM_FILE" ] || [ -n "$ARCHIVE" ] || fail '--checksum-file requires --archive'
+  [ -z "$VERSION" ] || VERSION="$(normalize_version "$VERSION")"
 }
 
 require_host() {
@@ -58,6 +70,7 @@ require_host() {
   [ "$($UNAME -s)" = Linux ] || fail 'Linux is required'
   command -v "$SYSTEMCTL" >/dev/null 2>&1 || fail 'systemctl is required'
   command -v "$CURL" >/dev/null 2>&1 || fail 'curl is required'
+  command -v "$BASH" >/dev/null 2>&1 || fail 'bash is required'
 }
 
 arch() {
@@ -75,16 +88,18 @@ core_presence_count() {
 }
 
 ensure_core() {
-  local count token url
+  local count token client_token url
   count="$(core_presence_count)"
   if core_healthy; then log 'reusing healthy Syrogo Core without modification'; return; fi
   [ "$count" -eq 0 ] || fail 'Syrogo Core appears incomplete or unhealthy; refusing to modify it'
-  [ "$MODE" = with-core ] || fail 'Syrogo Core is absent; rerun with --with-core or install Core first'
-  [ -n "$VERSION" ] || fail '--with-core requires an explicit same-version tag'
+  [ "$MODE" != console-only ] || fail 'Syrogo Core is absent; --console-only requires an existing healthy Core'
+  [ -n "$VERSION" ] || resolve_version
   token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
   url="${CORE_INSTALLER_URL/__TAG__/$VERSION}"
   log "installing same-tag Core $VERSION using its installer"
-  "$CURL" -fsSL "$url" | SYROGO_BOOTSTRAP_ADMIN_TOKEN="$token" bash -s -- --version "$VERSION" --bootstrap
+  client_token="$("$CURL" -fsSL "$url" | SYROGO_BOOTSTRAP_ADMIN_TOKEN="$token" "$BASH" -s -- --version "$VERSION" --bootstrap)"
+  [[ "$client_token" =~ ^[0-9a-f]{64}$ ]] || fail 'Core installer returned an invalid bootstrap client token'
+  client_token=""
   core_healthy || fail 'Core installer completed but Core is unhealthy'
   log "Core bootstrap admin token: $token"
 }
@@ -95,6 +110,7 @@ resolve_version() {
   json="$("$CURL" -fsSL "https://api.github.com/repos/$REPO/releases/latest")"
   VERSION="$(printf '%s' "$json" | tr ',' '\n' | grep '"tag_name"' | cut -d '"' -f4 | head -n1)"
   [ -n "$VERSION" ] || fail 'cannot resolve latest Console release'
+  VERSION="$(normalize_version "$VERSION")"
 }
 
 download_release() {
