@@ -1,0 +1,21 @@
+[Unit]
+Description=Syrogo Console
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_GROUP__
+WorkingDirectory=__INSTALL_ROOT__
+ExecStart=__INSTALL_ROOT__/bin/syrogo-console --listen __LISTEN__ --root __INSTALL_ROOT__/dist --core-url __CORE_URL__
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=__INSTALL_ROOT__
+
+[Install]
+WantedBy=multi-user.target

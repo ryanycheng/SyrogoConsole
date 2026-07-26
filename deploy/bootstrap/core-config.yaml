@@ -1,0 +1,17 @@
+listeners:
+  - name: admin
+    listen: "127.0.0.1:23234"
+    inbounds: []
+clients: []
+inbounds: []
+routing:
+  rules: []
+providers: []
+admin:
+  enabled: true
+  token: "__ADMIN_TOKEN__"
+accounting:
+  enabled: true
+  backend: memory
+  expose_http: true
+  admin_token: "__ACCOUNTING_TOKEN__"

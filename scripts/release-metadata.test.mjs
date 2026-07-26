@@ -25,7 +25,8 @@ describe('createReleaseMetadata', () => {
 
     const metadata = await createReleaseMetadata({
       version: '1.2.3',
-      syrogoVersionRange: '>=0.15.0 <0.16.0',
+      coreVersion: '1.2.3',
+      syrogoVersionRange: '>=1.2.0 <1.3.0',
       gitCommit: 'abc123',
       builtAt: '2026-07-23T10:00:00Z',
       projectRoot: root,
@@ -33,7 +34,8 @@ describe('createReleaseMetadata', () => {
 
     expect(metadata).toEqual({
       console_version: '1.2.3',
-      syrogo_version_range: '>=0.15.0 <0.16.0',
+      core_version: '1.2.3',
+      syrogo_version_range: '>=1.2.0 <1.3.0',
       git_commit: 'abc123',
       built_at: '2026-07-23T10:00:00.000Z',
     })
@@ -53,7 +55,8 @@ describe('createReleaseMetadata', () => {
     const root = await project('1.2.2')
     await expect(createReleaseMetadata({
       version: '1.2.3',
-      syrogoVersionRange: '>=0.15.0 <0.16.0',
+      coreVersion: '1.2.3',
+      syrogoVersionRange: '>=1.2.0 <1.3.0',
       gitCommit: 'abc123',
       builtAt: '2026-07-23T10:00:00Z',
       projectRoot: root,
