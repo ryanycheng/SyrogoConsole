@@ -7,6 +7,10 @@ import { UsagePage } from '../pages/usage/UsagePage'
 import { LogsPage } from '../pages/logs/LogsPage'
 import { SessionsPage } from '../pages/sessions/SessionsPage'
 import { ProvidersPage } from '../pages/providers/ProvidersPage'
+import { ClientsPage } from '../pages/clients/ClientsPage'
+import { ClientDetailPage } from '../pages/clients/ClientDetailPage'
+import { RoutesPage } from '../pages/routes/RoutesPage'
+import { SystemConfigPage } from '../pages/config/SystemConfigPage'
 
 function RequireAuth() {
   if (!hasAdminToken()) return <Navigate to="/login" replace />
@@ -26,8 +30,12 @@ const router = createBrowserRouter([
           { path: 'dashboard', element: <DashboardPage /> },
           { path: 'sessions', element: <SessionsPage /> },
           { path: 'providers', element: <ProvidersPage /> },
+          { path: 'clients', element: <ClientsPage /> },
+          { path: 'clients/:name', element: <ClientDetailPage /> },
+          { path: 'routes', element: <RoutesPage /> },
           { path: 'usage', element: <UsagePage /> },
           { path: 'logs', element: <LogsPage /> },
+          { path: 'config', element: <SystemConfigPage /> },
         ],
       },
     ],

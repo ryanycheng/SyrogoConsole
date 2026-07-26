@@ -31,11 +31,17 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   })
 }
 
+export async function apiPostText<T>(path: string, body: string, ifMatch?: string): Promise<T> {
+  const headers = new Headers({ 'Content-Type': 'application/yaml' })
+  if (ifMatch) headers.set('If-Match', ifMatch)
+  return apiRequest<T>(path, { method: 'POST', body, headers })
+}
+
 async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getAdminToken()
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
-  if (init.body !== undefined) headers.set('Content-Type', 'application/json')
+  if (init.body !== undefined && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
   const response = await fetch(`${configuredBaseURL}${path}`, {

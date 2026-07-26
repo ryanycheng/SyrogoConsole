@@ -59,3 +59,25 @@ npm run build
 `syrogo_version_range` 使用标准 npm SemVer range。Syrogo 仍处于 `0.x` 阶段时，建议默认把 Core minor 版本作为兼容边界，但每次发布都必须根据实际 API 依赖显式填写范围。
 
 当前兼容声明属于发布元数据，Console 尚不会在运行时阻止连接不兼容的 Core。若未来需要页面告警或阻断，应先为 Syrogo Admin API 增加可靠的版本端点。
+
+## Clients 与 usage 语义
+
+Console 遵循 Core Admin API 的以下契约：
+
+- Client `name` 是稳定的 quota/accounting identity；轮换 token 时保持 name 不变。已有 Client 的 token 留空或填 `<redacted>` 表示保留，CRUD 会原子保存并热应用。
+- Client quota 会完整 round-trip。每个 window 只能使用一个 `type`（`requests`、`tokens`、`cost`）及对应 limit；canonical 示例：
+
+  ```yaml
+  quota:
+    enabled: true
+    windows:
+      - {name: hourly-requests, type: requests, duration: 1h, max_requests: 1000}
+      - {name: daily-tokens, type: tokens, duration: 24h, max_tokens: 1000000}
+      - {name: monthly-cost, type: cost, duration: 720h, max_cost_usd: 25}
+  ```
+
+  旧 window 省略 `type` 但包含 `max_requests` 时按 `requests` 兼容。Requests 在入口准入时计数；Tokens/Cost 仅在成功 terminal response 后计入，因此并发成功可能 overshoot，下一次请求才返回 429。Cost 来自 Core pricing 而非 Provider 账单；unpriced model 按 `$0` 并显示 warning。Provider quota 不支持 Cost。
+- 变更或删除 binding 不能让 `routing.rules[].from_tags` 引用的 tag 失去最后一个 Client 来源。结构化错误会列出 route；解除方式有两种：先新增/更新另一条 binding 提供同一 tag，或从全部列出的 route `from_tags` 删除/修改该 tag，然后重试。
+- Clients 列表的 **Usage** 是 all-time，**Frequency** 是所选最近 7/30/90 个 UTC 自然日；metrics 请求失败不应阻断 CRUD。
+- Client detail 使用 UTC 前闭后开范围。当前 UTC 日是 `partial`，旧数据 coverage 不可确认时是 `unknown`，不能显示为确定的零值。
+- 原始记录按 `retention_days` 保留，每日聚合按独立的 `snapshot_retention_days` 保留；“Daily records”是每日聚合，不是逐请求审计日志。

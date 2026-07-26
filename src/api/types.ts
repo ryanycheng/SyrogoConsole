@@ -337,16 +337,26 @@ export interface ProviderCheckRequest {
   provider?: ProviderResource
 }
 
+export type RoutingStrategy = 'failover' | 'round_robin' | 'weighted_round_robin'
+
 export interface RouteResource {
-  target_model?: string
-  model_map?: Record<string, string>
-  [key: string]: unknown
+  name: string
+  from_tags: string[]
+  to_tags: string[]
+  strategy: RoutingStrategy
+  weights: Record<string, number>
+  target_model: string
+  model_map: Record<string, string>
 }
 
 export interface RoutesResponse {
-  items?: RouteResource[]
-  routes?: RouteResource[]
-  [key: string]: unknown
+  items: RouteResource[]
+}
+
+export type RouteUpsertRequest = RouteResource
+
+export interface RouteDeleteRequest {
+  name: string
 }
 
 export interface ProviderCheckResponse {
@@ -364,13 +374,231 @@ export interface ConfigMutationResponse {
   restart_required?: boolean
   reason?: string
   history_id?: string
+  quota_state_reset?: boolean
+}
+
+export type ClientQuotaType = 'requests' | 'tokens' | 'cost'
+
+export interface ClientQuotaWindowConfig {
+  name: string
+  /** Older Core responses omit type and are request quotas. */
+  type?: ClientQuotaType
+  duration: string
+  max_requests?: number
+  max_tokens?: number
+  max_cost_usd?: number
+}
+
+export interface ClientQuotaConfig {
+  enabled: boolean
+  windows: ClientQuotaWindowConfig[]
+}
+
+export interface ClientBindingResource {
+  inbound: string
+  inbound_protocol: string
+  inbound_path: string
+  ref: string
+  tag: string
+}
+
+export interface ClientResource {
+  name: string
+  token: string
+  quota: ClientQuotaConfig
+  bindings: ClientBindingResource[]
+}
+
+export interface ConfigInboundOption {
+  name: string
+  protocol: string
+  path: string
+  clients?: Array<{ ref: string; tag: string }>
+}
+
+export interface ConfigOutboundOption {
+  name: string
+  protocol: string
+  tag: string
+}
+
+export interface ConfigOptionsResponse {
+  inbounds: ConfigInboundOption[]
+  outbounds?: ConfigOutboundOption[]
+  client_tags?: string[]
+  outbound_tags?: string[]
+  routing_strategies?: RoutingStrategy[]
+}
+
+export interface ClientsResponse {
+  items: ClientResource[]
+}
+
+export interface ClientFrequency {
+  requests: number
+  active_days: number
+  calendar_days: number
+  requests_per_day: number
+  requests_per_active_day: number
+}
+
+export interface ClientQuotaWindowMetrics {
+  name: string
+  /** Older Core responses omit type and expose request fields or aliases. */
+  type?: ClientQuotaType
+  duration?: string
+  max_requests?: number
+  used_requests?: number
+  remaining_requests?: number
+  max_tokens?: number
+  used_tokens?: number
+  remaining_tokens?: number
+  max_cost_usd?: number
+  used_cost_usd?: number
+  remaining_cost_usd?: number
+  unpriced_count?: number
+  warning?: string
+  reset_at?: string
+  limit?: number
+  used?: number
+  remaining?: number
+}
+
+export interface ClientQuotaMetrics {
+  client?: string
+  inbound?: string
+  enabled: boolean
+  state: string
+  windows: ClientQuotaWindowMetrics[]
+}
+
+export interface ClientMetricsItem {
+  client: ClientResource
+  all_time: UsageRow
+  frequency: ClientFrequency
+  quota?: ClientQuotaMetrics
+}
+
+export interface ClientsMetricsResponse {
+  items: ClientMetricsItem[]
+  days: number
+  start_date: string
+  end_date: string
+}
+
+export interface ClientUpsertRequest {
+  name: string
+  token: string
+  quota: ClientQuotaConfig
+}
+
+export interface ClientDeleteRequest {
+  name: string
+}
+
+export interface ClientBindingUpsertRequest {
+  inbound: string
+  ref: string
+  tag: string
+}
+
+export interface ClientBindingDeleteRequest {
+  inbound: string
+  ref: string
+}
+
+export interface ClientUsageStats extends UsageRow {
+  value: string
+  request_count: number
+  success_count: number
+  error_count: number
+  fallback_count: number
+  input_tokens: number
+  output_tokens: number
+  cached_input_read_tokens: number
+  cached_input_write_tokens: number
+  cache_read_tokens: number
+  cache_create_tokens: number
+  total_tokens: number
+  cost_usd: number
+  provider_usage_count: number
+  estimated_usage_count: number
+  tool_units?: Record<string, number>
+  last_seen_at: string
+}
+
+export type ClientDailyUsageStatus = 'complete' | 'partial' | 'unknown'
+
+export interface ClientDailyUsage extends ClientUsageStats {
+  date: string
+  status: ClientDailyUsageStatus
+}
+
+export interface ClientUsageCoverage {
+  tracking_started_at?: string
+  known: boolean
+  backend: string
+  aggregates_persisted: boolean
+  raw_retention_days: number
+}
+
+export interface ClientUsageResponse {
+  client: ClientResource
+  all_time: ClientUsageStats
+  range_summary: ClientUsageStats
+  quota?: ClientQuotaMetrics
+  coverage: ClientUsageCoverage
+  start_date: string
+  end_date: string
+  daily: ClientDailyUsage[]
+}
+
+export interface ConfigReadResponse {
+  config_ready: boolean
+  redacted_content: string
+  revision: string
+  checksum: string
+}
+
+export interface ConfigValidateResponse {
+  ok: boolean
+}
+
+export interface ConfigUpdateResponse {
+  ok: boolean
+  saved: boolean
+  applied: boolean
+  revision: string
+  checksum: string
 }
 
 export interface ConfigApplyResponse {
   ok: boolean
+  saved?: boolean
   applied: boolean
   restart_required: boolean
   reason?: string
   history_id?: string
   quota_state_reset: boolean
+}
+
+export interface ConfigHistoryItem {
+  id: string
+  created_at: string
+  reason: string
+  checksum: string
+}
+
+export interface ConfigHistoryResponse {
+  items: ConfigHistoryItem[]
+}
+
+export interface ConfigHistoryDiffResponse {
+  id: string
+  current_content: string
+  history_content: string
+}
+
+export interface ConfigRollbackRequest {
+  id: string
 }

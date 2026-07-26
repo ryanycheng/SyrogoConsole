@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { Message } from '@arco-design/web-react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { FeedbackProvider } from '../../app/feedback'
 import { ProvidersPage } from './ProvidersPage'
 import type { ProviderResource } from '../../api/types'
 
@@ -32,11 +32,8 @@ const metric = {
 }
 
 function renderPage() {
-  vi.spyOn(Message, 'success').mockImplementation(() => vi.fn())
-  vi.spyOn(Message, 'error').mockImplementation(() => vi.fn())
-  vi.spyOn(Message, 'warning').mockImplementation(() => vi.fn())
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(<QueryClientProvider client={client}><ProvidersPage /></QueryClientProvider>)
+  return render(<FeedbackProvider><QueryClientProvider client={client}><ProvidersPage /></QueryClientProvider></FeedbackProvider>)
 }
 
 function requestPath(call: number) {

@@ -21,12 +21,12 @@ const navItems = [
   { key: '/dashboard', label: 'Dashboard', icon: <IconDashboard /> },
   { key: '/sessions', label: 'Sessions', icon: <IconHistory /> },
   { key: '/providers', label: 'Providers', icon: <IconStorage /> },
-  { key: '/clients', label: 'Clients', icon: <IconSafe />, disabled: true },
-  { key: '/routes', label: 'Routes & Models', icon: <IconCommon />, disabled: true },
+  { key: '/clients', label: 'Clients', icon: <IconSafe /> },
+  { key: '/routes', label: 'Routes', icon: <IconCommon /> },
   { key: '/usage', label: 'Usage', icon: <IconDashboard /> },
   { key: '/monitoring', label: 'Monitoring', icon: <IconCode />, disabled: true },
   { key: '/logs', label: 'Logs', icon: <IconFile /> },
-  { key: '/config', label: 'System Config', icon: <IconSettings />, disabled: true },
+  { key: '/config', label: 'System Config', icon: <IconSettings /> },
   { key: '/debug', label: 'Debug', icon: <IconBug />, disabled: true },
 ]
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -9,7 +9,6 @@ import {
   Divider,
   Form,
   Input,
-  Message,
   Popover,
   Radio,
   Select,
@@ -23,6 +22,8 @@ import type { TableColumnProps } from '@arco-design/web-react'
 import { IconDelete, IconEdit, IconPlus, IconRefresh } from '@arco-design/web-react/icon'
 import { apiGet, apiPost, buildQuery } from '../../api/client'
 import { errorMessage } from '../../api/errors'
+import { useFeedback } from '../../app/feedbackContext'
+import { PageDialog } from '../../components/PageDialog'
 import type {
   ConfigMutationResponse,
   ProviderCapabilities,
@@ -315,55 +316,6 @@ function HelpText({ children }: { children: ReactNode }) {
   return <Typography.Text className="field-help" type="secondary">{children}</Typography.Text>
 }
 
-interface PageDialogProps {
-  title: string
-  children: ReactNode
-  footer: ReactNode
-  className?: string
-  onCancel: () => void
-}
-
-function PageDialog({ title, children, footer, className = '', onCancel }: PageDialogProps) {
-  const titleId = useId()
-  const dialogRef = useRef<HTMLDivElement>(null)
-  const previouslyFocusedRef = useRef<HTMLElement | null>(null)
-
-  useEffect(() => {
-    previouslyFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const firstFocusable = dialogRef.current?.querySelector<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')
-    firstFocusable?.focus()
-    return () => previouslyFocusedRef.current?.focus()
-  }, [])
-
-  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      onCancel()
-      return
-    }
-    if (event.key !== 'Tab') return
-    const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])
-    if (!focusable.length) return
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
-  return <div className="provider-dialog-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}>
-    <div ref={dialogRef} className={`provider-dialog ${className}`.trim()} role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={handleKeyDown}>
-      <h3 id={titleId} className="provider-dialog-title">{title}</h3>
-      <div className="provider-dialog-content">{children}</div>
-      <div className="provider-dialog-footer">{footer}</div>
-    </div>
-  </div>
-}
-
 function ConfirmationDialog({ confirmation, onCancel, onConfirm }: { confirmation: Confirmation; onCancel: () => void; onConfirm: () => void }) {
   return <PageDialog title={confirmation.title} onCancel={onCancel} footer={<><Button onClick={onCancel}>Cancel</Button><Button type="primary" status="danger" onClick={onConfirm}>{confirmation.confirmText}</Button></>}>
     <p className="provider-confirm-content">{confirmation.content}</p>
@@ -652,6 +604,7 @@ function TestProviderModal({ provider, testing, modelSuggestions, onClose, onTes
 }
 
 export function ProvidersPage() {
+  const feedback = useFeedback()
   const queryClient = useQueryClient()
   const pageRef = useRef<HTMLDivElement>(null)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -670,18 +623,18 @@ export function ProvidersPage() {
 
   const refreshConfig = async () => { await queryClient.invalidateQueries({ queryKey: ['providers'] }) }
   const mutationApplied = async (result: ConfigMutationResponse) => {
-    if (!result.applied) Message.warning(`Core did not apply this change${result.reason ? `: ${result.reason}` : '.'}`)
+    if (!result.applied) feedback.warning(`Core accepted the request but did not apply the change${result.reason ? `: ${result.reason}` : '.'}`)
     await Promise.all([refreshConfig(), queryClient.invalidateQueries({ queryKey: ['provider-metrics'] })])
   }
-  const upsert = useMutation({ mutationFn: (provider: ProviderResource) => apiPost<ConfigMutationResponse>('/admin/config/provider/upsert', toProviderPayload(provider)), onSuccess: mutationApplied, onError: (error) => Message.error(errorMessage(error)) })
-  const enabled = useMutation({ mutationFn: (payload: { name: string; enabled: boolean }) => apiPost<ConfigMutationResponse>('/admin/config/provider/enabled', payload), onSuccess: mutationApplied, onError: (error) => Message.error(errorMessage(error)) })
-  const remove = useMutation({ mutationFn: (name: string) => apiPost<ConfigMutationResponse>('/admin/config/provider/delete', { name }), onSuccess: mutationApplied, onError: (error) => Message.error(errorMessage(error)) })
+  const upsert = useMutation({ mutationFn: (provider: ProviderResource) => apiPost<ConfigMutationResponse>('/admin/config/provider/upsert', toProviderPayload(provider)), onSuccess: mutationApplied, onError: (error) => feedback.error(errorMessage(error)) })
+  const enabled = useMutation({ mutationFn: (payload: { name: string; enabled: boolean }) => apiPost<ConfigMutationResponse>('/admin/config/provider/enabled', payload), onSuccess: mutationApplied, onError: (error) => feedback.error(errorMessage(error)) })
+  const remove = useMutation({ mutationFn: (name: string) => apiPost<ConfigMutationResponse>('/admin/config/provider/delete', { name }), onSuccess: mutationApplied, onError: (error) => feedback.error(errorMessage(error)) })
   const checkProvider = useMutation({ mutationFn: (payload: ProviderCheckRequest) => apiPost<ProviderCheckResponse>('/admin/config/provider/check', payload) })
 
   const modelSuggestions = useMemo(() => {
     const values: string[] = []
     for (const provider of configQuery.data?.items || []) for (const model of provider.models || []) values.push(model.name, ...model.aliases)
-    const routes = routesQuery.data?.items || routesQuery.data?.routes || []
+    const routes = routesQuery.data?.items || []
     for (const route of routes) {
       if (route.target_model) values.push(route.target_model)
       if (route.model_map) values.push(...Object.keys(route.model_map), ...Object.values(route.model_map))
@@ -750,6 +703,6 @@ export function ProvidersPage() {
     <Card bordered={false} className="data-card panel-card" title="Configured providers"><Table rowKey="name" loading={configQuery.isLoading} columns={columns} data={rows} pagination={false} scroll={{ x: 1480 }} /></Card>
     {confirmation ? <ConfirmationDialog confirmation={confirmation} onCancel={() => setConfirmation(undefined)} onConfirm={() => { const action = confirmation.action; setConfirmation(undefined); action() }} /> : null}
     {testingProvider ? <TestProviderModal provider={testingProvider} testing={checkProvider.isPending} modelSuggestions={modelSuggestions} onClose={() => setTestingProvider(undefined)} onTest={(model) => checkProvider.mutateAsync({ name: testingProvider.name, model })} /> : null}
-    {editing !== undefined ? <ProviderModal key={editing?.name || 'new'} visible initial={editing || undefined} saving={upsert.isPending} testing={checkProvider.isPending} modelSuggestions={modelSuggestions} onDirtyChange={setDirty} onCancel={() => { setDirty(false); setEditing(undefined) }} onSave={async (draft) => { try { await upsert.mutateAsync(toProviderPayload(draft)); setDirty(false); setEditing(undefined); Message.success('Provider saved and applied.') } catch { /* mutation reports the error */ } }} onTest={(draft, model) => checkProvider.mutateAsync({ name: draft.name, model, provider: toProviderPayload(draft) })} /> : null}
+    {editing !== undefined ? <ProviderModal key={editing?.name || 'new'} visible initial={editing || undefined} saving={upsert.isPending} testing={checkProvider.isPending} modelSuggestions={modelSuggestions} onDirtyChange={setDirty} onCancel={() => { setDirty(false); setEditing(undefined) }} onSave={async (draft) => { try { const result = await upsert.mutateAsync(toProviderPayload(draft)); if (result.applied) { setDirty(false); setEditing(undefined); feedback.success('Provider saved and applied.') } } catch { /* mutation reports the error */ } }} onTest={(draft, model) => checkProvider.mutateAsync({ name: draft.name, model, provider: toProviderPayload(draft) })} /> : null}
   </div>
 }
