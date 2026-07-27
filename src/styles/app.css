@@ -489,9 +489,42 @@ button.attention-item:hover {
   font-size: 18px;
 }
 
-.session-grid {
+.session-sections {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 22px;
+}
+
+.session-section {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.session-section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 2px;
+}
+
+.session-section-head > div {
+  min-width: 0;
+}
+
+.session-section-head .arco-typography {
+  margin: 0;
+}
+
+.session-section-head .arco-typography-secondary {
+  display: block;
+  margin-top: 3px;
+}
+
+.session-grid,
+.favorite-session-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -558,8 +591,6 @@ button.attention-item:hover {
 }
 
 .favorite-session-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 10px;
 }
 
@@ -601,11 +632,29 @@ button.attention-item:hover {
   background: #f8f9fb;
 }
 
+.session-card-recent-stop {
+  border-left-color: #3491fa;
+  background: #f2f8ff;
+}
+
 .session-card-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+}
+
+.session-status-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-status-line .arco-badge,
+.session-status-line .arco-tag,
+.session-card-head .favorite-button {
+  flex: none;
 }
 
 .session-card-head .arco-typography {
@@ -613,7 +662,11 @@ button.attention-item:hover {
 }
 
 .session-event {
-  max-width: 96px;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-card-main {
@@ -1473,6 +1526,20 @@ button.attention-item:hover {
   text-align: left;
 }
 
+@media (max-width: 1360px) {
+  .session-grid,
+  .favorite-session-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1120px) {
+  .session-grid,
+  .favorite-session-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 768px) {
   .app-header,
   .console-hero {
@@ -1486,6 +1553,7 @@ button.attention-item:hover {
   }
 
   .session-grid,
+  .favorite-session-grid,
   .provider-form-grid,
   .client-form-grid,
   .client-quota-grid,

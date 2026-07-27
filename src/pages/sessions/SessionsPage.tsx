@@ -12,6 +12,7 @@ const { Row, Col } = Grid
 const viewStorageKey = 'syrogo_console_sessions_view'
 const refreshStorageKey = 'syrogo_console_sessions_refresh_interval'
 const favoriteStorageKey = 'syrogo_console_favorite_sessions'
+const recentStopWindowMs = 30 * 60 * 1000
 const statusOptions = ['', 'running', 'tool_running', 'waiting_permission', 'idle', 'compacting', 'stopped', 'unknown']
 const refreshOptions = [
   { label: 'Off', value: '0', interval: false },
@@ -99,11 +100,19 @@ function metricCount(items: SessionItem[], predicate: (item: SessionItem) => boo
   return items.filter(predicate).length
 }
 
+function isRecentlyStopped(item: SessionItem, now: number): boolean {
+  if (item.status !== 'idle' || item.last_event !== 'Stop' || !item.last_seen_at) return false
+  const stoppedAt = dayjs(item.last_seen_at)
+  if (!stoppedAt.isValid()) return false
+  return Math.max(0, now - stoppedAt.valueOf()) <= recentStopWindowMs
+}
+
 export function SessionsPage() {
   const [viewMode, setViewMode] = useState<ViewMode>(() => (window.localStorage.getItem(viewStorageKey) === 'table' ? 'table' : 'cards'))
   const [refreshInterval, setRefreshInterval] = useState(() => window.localStorage.getItem(refreshStorageKey) || '5000')
   const [favoriteIds, setFavoriteIds] = useState<string[]>(loadFavoriteSessionIds)
   const [filters, setFilters] = useState<SessionFilters>({ client: '', status: '', host: '', cwd: '' })
+  const [now, setNow] = useState(Date.now)
   const refreshOption = refreshOptions.find((option) => option.value === refreshInterval) || refreshOptions[2]
   const query = useQuery({
     queryKey: ['sessions', filters],
@@ -111,19 +120,32 @@ export function SessionsPage() {
     refetchInterval: refreshOption.interval,
   })
   const items = useMemo(() => query.data?.items || [], [query.data])
+  const sessionGroups = useMemo(
+    () => ({
+      current: items.filter((item) => item.status !== 'stopped'),
+      ended: items.filter((item) => item.status === 'stopped'),
+    }),
+    [items],
+  )
   const favoriteItems = useMemo(() => {
     const idSet = new Set(favoriteIds)
-    return items.filter((item) => idSet.has(item.id))
-  }, [favoriteIds, items])
+    return [...sessionGroups.current, ...sessionGroups.ended].filter((item) => idSet.has(item.id))
+  }, [favoriteIds, sessionGroups])
   const counts = useMemo(
     () => ({
       action: metricCount(items, (item) => item.status === 'waiting_permission'),
       active: metricCount(items, (item) => item.status === 'running' || item.status === 'tool_running' || item.status === 'compacting'),
       idle: metricCount(items, (item) => item.status === 'idle' || item.status === 'unknown'),
-      stopped: metricCount(items, (item) => item.status === 'stopped'),
+      recentStop: metricCount(items, (item) => isRecentlyStopped(item, now)),
+      ended: sessionGroups.ended.length,
     }),
-    [items],
+    [items, now, sessionGroups.ended.length],
   )
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem(viewStorageKey, viewMode)
@@ -145,15 +167,20 @@ export function SessionsPage() {
     },
     {
       title: 'Status',
-      dataIndex: 'status',
-      render: (status) => <Tag color={tagColor(statusKind(status))}>{status || 'unknown'}</Tag>,
+      width: 190,
+      render: (_, record) => (
+        <Space size={4} wrap>
+          <Tag color={tagColor(statusKind(record.status))}>{record.status || 'unknown'}</Tag>
+          {isRecentlyStopped(record, now) && <Tag color="arcoblue">Recently stopped</Tag>}
+        </Space>
+      ),
     },
-    { title: 'Client', dataIndex: 'client_name', render: (value) => value || '-' },
-    { title: 'Inbound', dataIndex: 'inbound_name', render: (value) => value || '-' },
-    { title: 'Location', render: (_, record) => tmuxLocation(record) },
-    { title: 'Workspace', dataIndex: 'cwd', ellipsis: true, render: (value) => value || '-' },
-    { title: 'Last seen', dataIndex: 'last_seen_at', render: (value, record) => formatTime(value || record.started_at) },
-    { title: 'Command', render: (_, record) => <Typography.Text copyable={{ text: primaryCommand(record) }}>{primaryCommand(record) || '-'}</Typography.Text> },
+    { title: 'Client', dataIndex: 'client_name', width: 160, ellipsis: true, render: (value) => value || '-' },
+    { title: 'Inbound', dataIndex: 'inbound_name', width: 160, ellipsis: true, render: (value) => value || '-' },
+    { title: 'Location', width: 220, ellipsis: true, render: (_, record) => tmuxLocation(record) },
+    { title: 'Workspace', dataIndex: 'cwd', width: 220, ellipsis: true, render: (value) => value || '-' },
+    { title: 'Last seen', dataIndex: 'last_seen_at', width: 150, render: (value, record) => formatTime(value || record.started_at) },
+    { title: 'Command', width: 240, render: (_, record) => <Typography.Text copyable={{ text: primaryCommand(record) }}>{primaryCommand(record) || '-'}</Typography.Text> },
   ]
 
   function updateFilter(key: keyof SessionFilters, value: string) {
@@ -168,6 +195,7 @@ export function SessionsPage() {
     const favorited = favoriteIds.includes(item.id)
     return (
       <Button
+        aria-label={`${favorited ? 'Unfavorite' : 'Favorite'} session ${item.id}`}
         className="favorite-button"
         type="text"
         size="mini"
@@ -181,24 +209,25 @@ export function SessionsPage() {
     const kind = statusKind(item.status)
     const command = primaryCommand(item)
     const runtime = formatDuration(item.started_at, item.stopped_at)
+    const recentStop = isRecentlyStopped(item, now)
     return (
-      <Card key={item.id} className={`session-card session-card-${kind}${compact ? ' favorite-session-card' : ''}`} bordered={false}>
+      <Card key={item.id} className={`session-card session-card-${kind}${recentStop ? ' session-card-recent-stop' : ''}${compact ? ' favorite-session-card' : ''}`} bordered={false}>
         <div className="session-card-head">
-          <Space size={6}>
+          <div className="session-status-line">
             <Badge status={kind === 'danger' ? 'error' : kind === 'warn' ? 'warning' : kind === 'muted' ? 'default' : 'success'} />
             <Tag color={tagColor(kind)}>{item.status || 'unknown'}</Tag>
-            <Typography.Text type="secondary" className="session-event">
+            <Typography.Text title={item.last_event || 'no hook'} type="secondary" className="session-event">
               {item.last_event || 'no hook'}
             </Typography.Text>
-          </Space>
+          </div>
           {renderFavoriteButton(item)}
         </div>
         <div className="session-card-main">
           <div>
-            <Typography.Title heading={6} className="session-title">
+            <Typography.Title title={item.client_name || '-'} heading={6} className="session-title">
               {item.client_name || '-'}
             </Typography.Title>
-            <Typography.Text type="secondary" className="single-line">
+            <Typography.Text title={`${item.inbound_name || '-'} · ${workspaceLabel(item.cwd)}`} type="secondary" className="single-line">
               {item.inbound_name || '-'} · {workspaceLabel(item.cwd)}
             </Typography.Text>
           </div>
@@ -208,21 +237,22 @@ export function SessionsPage() {
           </div>
         </div>
         <div className="session-chip-row">
-          <Tag>{item.git_branch || 'no branch'}</Tag>
+          {recentStop && <Tag color="arcoblue">Recently stopped</Tag>}
+          <Tag title={item.git_branch || 'no branch'}>{item.git_branch || 'no branch'}</Tag>
           <Tag>pid {item.pid || '-'}</Tag>
           <Tag>{formatTime(item.last_seen_at || item.started_at)}</Tag>
         </div>
         <div className="session-meta">
           <span>tmux</span>
-          <strong>{tmuxLocation(item)}</strong>
+          <strong title={tmuxLocation(item)}>{tmuxLocation(item)}</strong>
           <span>cwd</span>
-          <strong>{item.cwd || '-'}</strong>
+          <strong title={item.cwd || '-'}>{item.cwd || '-'}</strong>
           <span>host</span>
-          <strong>{item.host || '-'}</strong>
+          <strong title={item.host || '-'}>{item.host || '-'}</strong>
           {!compact && (
             <>
               <span>cmd</span>
-              <strong>{commandLabel(item)}</strong>
+              <strong title={commandLabel(item)}>{commandLabel(item)}</strong>
             </>
           )}
         </div>
@@ -232,6 +262,35 @@ export function SessionsPage() {
           </Typography.Text>
         )}
       </Card>
+    )
+  }
+
+  function renderSessionSection(title: string, description: string, sectionItems: SessionItem[]) {
+    if (sectionItems.length === 0) return null
+    return (
+      <section className="session-section" aria-label={title}>
+        <div className="session-section-head">
+          <div>
+            <Typography.Title heading={5}>{title}</Typography.Title>
+            <Typography.Text type="secondary">{description}</Typography.Text>
+          </div>
+          <Tag>{sectionItems.length}</Tag>
+        </div>
+        {viewMode === 'cards' ? (
+          <div className="session-grid">{sectionItems.map((item) => renderSessionCard(item))}</div>
+        ) : (
+          <Card bordered={false} className="panel-card session-table-card">
+            <Table
+              rowKey="id"
+              loading={query.isLoading}
+              columns={columns}
+              data={sectionItems}
+              pagination={{ pageSize: 12 }}
+              scroll={{ x: 1394 }}
+            />
+          </Card>
+        )}
+      </section>
     )
   }
 
@@ -288,14 +347,14 @@ export function SessionsPage() {
           <Card bordered={false} className="session-stat-card session-stat-blue">
             <span>Idle</span>
             <strong>{counts.idle}</strong>
-            <small>idle or unknown</small>
+            <small>{counts.recentStop} recently stopped</small>
           </Card>
         </Col>
         <Col xs={12} xl={6}>
           <Card bordered={false} className="session-stat-card session-stat-muted">
-            <span>Stopped</span>
-            <strong>{counts.stopped}</strong>
-            <small>kept for review</small>
+            <span>Ended</span>
+            <strong>{counts.ended}</strong>
+            <small>SessionEnd or process exited</small>
           </Card>
         </Col>
       </Row>
@@ -315,16 +374,13 @@ export function SessionsPage() {
         </Space>
       </Card>
 
-      {viewMode === 'cards' ? (
-        items.length === 0 ? (
-          <EmptyState description="No Claude Code sessions yet." />
-        ) : (
-          <div className="session-grid">{items.map((item) => renderSessionCard(item))}</div>
-        )
+      {items.length === 0 ? (
+        <EmptyState description="No Claude Code sessions yet." />
       ) : (
-        <Card bordered={false} className="panel-card">
-          <Table rowKey="id" loading={query.isLoading} columns={columns} data={items} pagination={{ pageSize: 12 }} />
-        </Card>
+        <div className="session-sections">
+          {renderSessionSection('Current sessions', 'Running terminals, pending work, and idle sessions available to continue.', sessionGroups.current)}
+          {renderSessionSection('Ended sessions', 'Sessions closed by SessionEnd or process exit.', sessionGroups.ended)}
+        </div>
       )}
     </div>
   )
