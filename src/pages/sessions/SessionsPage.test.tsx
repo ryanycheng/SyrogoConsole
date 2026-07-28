@@ -113,6 +113,37 @@ describe('SessionsPage', () => {
     expect(fetchMock).toHaveBeenCalledTimes(requests)
   })
 
+  it('preserves attention-first and recent-activity order in lifecycle sections', async () => {
+    renderPage([
+      session({ id: 'permission-old', status: 'waiting_permission', last_event: 'Notification', last_seen_at: '2026-07-27T11:30:00Z' }),
+      session({ id: 'idle-notification-new', status: 'idle', last_event: 'Notification', last_seen_at: '2026-07-27T11:59:00Z' }),
+      session({ id: 'recent-stop', status: 'idle', last_event: 'Stop', last_seen_at: '2026-07-27T11:50:00Z' }),
+      session({ id: 'running-old', status: 'running', last_event: 'UserPromptSubmit', last_seen_at: '2026-07-27T11:40:00Z' }),
+      session({ id: 'ended-new', status: 'stopped', last_event: 'SessionEnd', last_seen_at: '2026-07-27T11:58:00Z' }),
+    ])
+
+    const current = await screen.findByRole('region', { name: 'Current sessions' })
+    const currentCards = current.querySelectorAll('.session-card')
+    expect([...currentCards].map((card) => card.textContent)).toEqual([
+      expect.stringContaining('permission-old'),
+      expect.stringContaining('idle-notification-new'),
+      expect.stringContaining('recent-stop'),
+      expect.stringContaining('running-old'),
+    ])
+    expect(within(current).getByText('Recently stopped')).toBeInTheDocument()
+    expect(within(current).getAllByText('Notification')).toHaveLength(2)
+
+    fireEvent.click(screen.getByText('Table'))
+    const currentRows = within(current).getAllByRole('row').slice(1)
+    expect(currentRows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining('permission-old'),
+      expect.stringContaining('idle-notification-new'),
+      expect.stringContaining('recent-stop'),
+      expect.stringContaining('running-old'),
+    ])
+    expect(within(screen.getByRole('region', { name: 'Ended sessions' })).getByText('ended-new')).toBeInTheDocument()
+  })
+
   it('keeps lifecycle sections in table view', async () => {
     renderPage([
       session({ id: 'current-table', status: 'running', last_event: 'UserPromptSubmit' }),

@@ -1016,12 +1016,54 @@ button.attention-item:hover {
   margin-top: 24px;
 }
 
-.route-shadow-warning {
+.route-shadow-warning,
+.route-match-note {
   margin-top: 8px;
 }
 
-.route-shadow-warning .arco-alert-content {
+.route-shadow-warning .arco-alert-content,
+.route-match-note .arco-alert-content {
   font-size: 11px;
+}
+
+.route-priority {
+  display: grid;
+  gap: 5px;
+}
+
+.route-match-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.route-match-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.route-match-row .arco-form-item {
+  margin-bottom: 0;
+}
+
+.route-match-row > .arco-btn {
+  margin-top: 24px;
+}
+
+.route-match-summary {
+  display: grid;
+  align-items: start;
+  gap: 6px;
+}
+
+.route-match-summary > .arco-tag {
+  width: max-content;
+}
+
+.route-match-summary code {
+  overflow-wrap: anywhere;
 }
 
 .system-config-managed .arco-card-body {
@@ -1566,12 +1608,14 @@ button.attention-item:hover {
     grid-template-columns: 1fr;
   }
 
-  .route-model-map-row {
+  .route-model-map-row,
+  .route-match-row {
     grid-template-columns: 1fr;
   }
 
   .route-map-arrow,
-  .route-model-map-row > .arco-btn {
+  .route-model-map-row > .arco-btn,
+  .route-match-row > .arco-btn {
     margin-top: 0;
   }
 }

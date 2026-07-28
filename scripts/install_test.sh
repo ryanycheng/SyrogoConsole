@@ -52,6 +52,8 @@ setup_case() {
   export SYROGO_BASH="$CASE_ROOT/bin/bash"
   export SYROGO_SYSTEMD_DIR="$CASE_ROOT/systemd"
   export SYROGO_CONSOLE_INSTALL_ROOT="$CASE_ROOT/console"
+  export SYROGO_CONSOLE_ENV_FILE="$CASE_ROOT/syrogo-console.env"
+  unset SYROGO_CONSOLE_LISTEN
   export SYROGO_CONSOLE_USER="$(id -un)"
   export SYROGO_CONSOLE_GROUP="$(id -gn)"
   export SYROGO_CORE_ROOT="$CASE_ROOT/core"
@@ -72,6 +74,91 @@ make_healthy_core() {
   : > "$SYROGO_CORE_UNIT"
   : > "$CORE_HEALTH_MARKER"
 }
+
+assert_environment_unit() {
+  local expected="$1" unit="$SYROGO_SYSTEMD_DIR/syrogo-console.service"
+  [ "$(cat "$SYROGO_CONSOLE_ENV_FILE")" = "SYROGO_CONSOLE_LISTEN=$expected" ] || fail_test "unexpected persisted listen for $expected"
+  grep -Fq "EnvironmentFile=$SYROGO_CONSOLE_ENV_FILE" "$unit" || fail_test 'unit does not use the persisted environment file'
+  grep -Fq ' --listen ${SYROGO_CONSOLE_LISTEN} ' "$unit" || fail_test 'unit does not expand the persisted listen variable'
+  ! grep -q '__ENV_FILE__\|__LISTEN__' "$unit" || fail_test 'unit contains an unresolved placeholder'
+}
+
+# New installs persist the safe default without hard-coding it in the unit.
+setup_case listen-default
+make_healthy_core
+mapfile -t common < <(install_args v0.16.3)
+"$INSTALLER" --console-only "${common[@]}"
+assert_environment_unit '127.0.0.1:23233'
+
+# An explicit public bind persists across a later upgrade that omits the variable.
+setup_case listen-upgrade
+make_healthy_core
+mapfile -t common < <(install_args v0.16.3)
+SYROGO_CONSOLE_LISTEN='0.0.0.0:23233' "$INSTALLER" --console-only "${common[@]}"
+assert_environment_unit '0.0.0.0:23233'
+printf '# preserve this exact file\nSYROGO_CONSOLE_LISTEN=0.0.0.0:23233\n' > "$SYROGO_CONSOLE_ENV_FILE"
+if "$INSTALLER" --console-only "${common[@]}" >"$CASE_ROOT/out" 2>&1; then
+  fail_test 'non-canonical persisted environment file was accepted'
+fi
+printf 'SYROGO_CONSOLE_LISTEN=0.0.0.0:23233\n' > "$SYROGO_CONSOLE_ENV_FILE"
+before="$(sha256sum "$SYROGO_CONSOLE_ENV_FILE")"
+"$INSTALLER" --console-only "${common[@]}"
+[ "$before" = "$(sha256sum "$SYROGO_CONSOLE_ENV_FILE")" ] || fail_test 'ordinary upgrade rewrote persisted listen'
+assert_environment_unit '0.0.0.0:23233'
+SYROGO_CONSOLE_LISTEN='localhost:23233' "$INSTALLER" --console-only "${common[@]}"
+assert_environment_unit 'localhost:23233'
+
+setup_case listen-healthcheck
+make_healthy_core
+SYROGO_CONSOLE_LISTEN='0.0.0.0:23233' "$INSTALLER" --console-only --archive "$CASE_ROOT/console.tar.gz" --checksum-file "$CASE_ROOT/checksums.txt" --version v0.16.3
+assert_environment_unit '0.0.0.0:23233'
+grep -q 'curl -fsS http://0.0.0.0:23233/healthz' "$TEST_LOG" || fail_test 'health check did not use persisted listen address'
+
+# The first new installer upgrade migrates the address from the old generated unit.
+setup_case listen-migration
+make_healthy_core
+cat > "$SYROGO_SYSTEMD_DIR/syrogo-console.service" <<EOF
+[Service]
+ExecStart=$SYROGO_CONSOLE_INSTALL_ROOT/bin/syrogo-console --listen 0.0.0.0:23233 --root $SYROGO_CONSOLE_INSTALL_ROOT/dist --core-url http://127.0.0.1:23234
+EOF
+mapfile -t common < <(install_args v0.16.3)
+"$INSTALLER" --console-only "${common[@]}"
+assert_environment_unit '0.0.0.0:23233'
+
+# Unsafe or ambiguous old units fail before replacement and restart.
+for state in missing-listen duplicate-exec wrong-port; do
+  setup_case "listen-migration-$state"
+  make_healthy_core
+  case "$state" in
+    missing-listen) printf '[Service]\nExecStart=/opt/syrogo-console/bin/syrogo-console --root /opt/syrogo-console/dist\n' > "$SYROGO_SYSTEMD_DIR/syrogo-console.service" ;;
+    duplicate-exec) printf '[Service]\nExecStart=/opt/syrogo-console/bin/syrogo-console --listen 0.0.0.0:23233 --root /opt/syrogo-console/dist --core-url http://127.0.0.1:23234\nExecStart=/bin/false\n' > "$SYROGO_SYSTEMD_DIR/syrogo-console.service" ;;
+    wrong-port) printf '[Service]\nExecStart=/opt/syrogo-console/bin/syrogo-console --listen 0.0.0.0:12345 --root /opt/syrogo-console/dist --core-url http://127.0.0.1:23234\n' > "$SYROGO_SYSTEMD_DIR/syrogo-console.service" ;;
+  esac
+  old_unit="$(sha256sum "$SYROGO_SYSTEMD_DIR/syrogo-console.service")"
+  mapfile -t common < <(install_args v0.16.3)
+  if "$INSTALLER" --console-only "${common[@]}" >"$CASE_ROOT/out" 2>&1; then
+    fail_test "$state old unit was accepted"
+  fi
+  [ "$old_unit" = "$(sha256sum "$SYROGO_SYSTEMD_DIR/syrogo-console.service")" ] || fail_test "$state old unit was overwritten"
+  ! grep -q 'systemctl restart syrogo-console.service' "$TEST_LOG" || fail_test "$state restarted Console"
+done
+
+# Explicit values retain port 23233 and reject unsafe inputs.
+for value in '0.0.0.0:12345' '0.0.0.0' 'bad host:23233' 'bad=host:23233'; do
+  setup_case "listen-invalid-${value//[^A-Za-z0-9]/-}"
+  make_healthy_core
+  mapfile -t common < <(install_args v0.16.3)
+  if SYROGO_CONSOLE_LISTEN="$value" "$INSTALLER" --console-only "${common[@]}" >"$CASE_ROOT/out" 2>&1; then
+    fail_test "invalid listen was accepted: $value"
+  fi
+  [ ! -e "$SYROGO_CONSOLE_ENV_FILE" ] || fail_test "invalid listen created an environment file: $value"
+done
+
+setup_case listen-ipv6
+make_healthy_core
+mapfile -t common < <(install_args v0.16.3)
+SYROGO_CONSOLE_LISTEN='[::1]:23233' "$INSTALLER" --console-only "${common[@]}"
+assert_environment_unit '[::1]:23233'
 
 # Default ensure and --console-only both reuse a healthy Core without changing it.
 for mode in ensure console-only; do
@@ -142,10 +229,12 @@ grep -q 'local archives require --version vX.Y.Z' "$CASE_ROOT/out"
 # Uninstall is scoped to Console and never removes or rewrites Core.
 setup_case uninstall
 mkdir -p "$SYROGO_CONSOLE_INSTALL_ROOT" "$SYROGO_CORE_ROOT/config"
+printf 'SYROGO_CONSOLE_LISTEN=0.0.0.0:23233\n' > "$SYROGO_CONSOLE_ENV_FILE"
 printf 'core-stays\n' > "$SYROGO_CORE_ROOT/config/config.yaml"
 before="$(sha256sum "$SYROGO_CORE_ROOT/config/config.yaml")"
 "$INSTALLER" --uninstall
 [ ! -e "$SYROGO_CONSOLE_INSTALL_ROOT" ]
+[ ! -e "$SYROGO_CONSOLE_ENV_FILE" ] || fail_test 'uninstall kept Console environment file'
 [ "$before" = "$(sha256sum "$SYROGO_CORE_ROOT/config/config.yaml")" ] || fail_test 'uninstall changed Core'
 grep -q 'systemctl disable syrogo-console.service' "$TEST_LOG"
 

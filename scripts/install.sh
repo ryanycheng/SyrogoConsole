@@ -14,7 +14,14 @@ USERADD="${SYROGO_USERADD:-useradd}"
 SLEEP="${SYROGO_SLEEP:-sleep}"
 SERVICE_USER="${SYROGO_CONSOLE_USER:-syrogo-console}"
 SERVICE_GROUP="${SYROGO_CONSOLE_GROUP:-$SERVICE_USER}"
-LISTEN="${SYROGO_CONSOLE_LISTEN:-127.0.0.1:23233}"
+DEFAULT_LISTEN="127.0.0.1:23233"
+ENV_FILE="${SYROGO_CONSOLE_ENV_FILE:-/etc/syrogo-console.env}"
+LISTEN=""
+LISTEN_EXPLICIT=0
+if [ "${SYROGO_CONSOLE_LISTEN+x}" = x ]; then
+  LISTEN="$SYROGO_CONSOLE_LISTEN"
+  LISTEN_EXPLICIT=1
+fi
 CORE_URL="${SYROGO_CORE_URL:-http://127.0.0.1:23234}"
 CORE_HEALTH_URL="${SYROGO_CORE_HEALTH_URL:-http://127.0.0.1:23234/healthz}"
 CORE_ROOT="${SYROGO_CORE_ROOT:-/opt/syrogo}"
@@ -44,6 +51,91 @@ normalize_version() {
   esac
   printf '%s' "$value" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || fail '--version must be vX.Y.Z'
   printf 'v%s' "$value"
+}
+
+validate_listen() {
+  local value="$1" host
+  case "$value" in
+    *[\ \"\'\\=]*|'') fail 'SYROGO_CONSOLE_LISTEN must be a host with port 23233' ;;
+  esac
+  if [[ "$value" =~ ^\[([0-9A-Fa-f:.%]+)\]:23233$ ]]; then
+    return
+  fi
+  [[ "$value" =~ ^([A-Za-z0-9._-]+):23233$ ]] || fail 'SYROGO_CONSOLE_LISTEN must be a host with port 23233'
+  host="${BASH_REMATCH[1]}"
+  [ -n "$host" ] || fail 'SYROGO_CONSOLE_LISTEN must be a host with port 23233'
+}
+
+read_listen_env() {
+  local line value="" count=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      SYROGO_CONSOLE_LISTEN=*)
+        value="${line#SYROGO_CONSOLE_LISTEN=}"
+        count=$((count + 1))
+        ;;
+      *) fail "invalid Console environment file: $ENV_FILE" ;;
+    esac
+  done < "$ENV_FILE"
+  [ "$count" -eq 1 ] || fail "invalid Console environment file: $ENV_FILE"
+  validate_listen "$value"
+  printf '%s' "$value"
+}
+
+migrate_listen_from_unit() {
+  local line value="" count=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ExecStart=*)
+        count=$((count + 1))
+        if [[ "$line" =~ ^ExecStart=[^[:space:]]*/bin/syrogo-console[[:space:]]+--listen[[:space:]]+([^[:space:]]+)[[:space:]]+--root[[:space:]]+[^[:space:]]+/dist[[:space:]]+--core-url[[:space:]]+[^[:space:]]+$ ]]; then
+          value="${BASH_REMATCH[1]}"
+        fi
+        ;;
+    esac
+  done < "$UNIT_PATH"
+  [ "$count" -eq 1 ] && [ -n "$value" ] || fail 'cannot safely migrate Console listen address; rerun with SYROGO_CONSOLE_LISTEN=<host>:23233'
+  validate_listen "$value"
+  printf '%s' "$value"
+}
+
+write_listen_env() {
+  local directory temporary
+  directory="$(dirname "$ENV_FILE")"
+  install -d -m 0755 "$directory"
+  temporary="$(mktemp "$directory/.syrogo-console.env.XXXXXX")"
+  printf 'SYROGO_CONSOLE_LISTEN=%s\n' "$LISTEN" > "$temporary"
+  chmod 0644 "$temporary"
+  mv -f "$temporary" "$ENV_FILE"
+}
+
+resolve_listen() {
+  case "$ENV_FILE" in
+    /*) ;;
+    *) fail 'SYROGO_CONSOLE_ENV_FILE must be an absolute path' ;;
+  esac
+  case "$ENV_FILE" in
+    *[\ \"\'\\\&\|]*) fail 'SYROGO_CONSOLE_ENV_FILE contains unsupported characters' ;;
+  esac
+  if [ "$LISTEN_EXPLICIT" -eq 1 ]; then
+    validate_listen "$LISTEN"
+    write_listen_env
+    return
+  fi
+  if [ -f "$ENV_FILE" ]; then
+    LISTEN="$(read_listen_env)"
+    return
+  fi
+  if [ -e "$ENV_FILE" ]; then
+    fail "Console environment path is not a regular file: $ENV_FILE"
+  fi
+  if [ -f "$UNIT_PATH" ]; then
+    LISTEN="$(migrate_listen_from_unit)"
+  else
+    LISTEN="$DEFAULT_LISTEN"
+    validate_listen "$LISTEN"
+  fi
+  write_listen_env
 }
 
 parse_args() {
@@ -148,12 +240,13 @@ install_console() {
   [ -n "$source" ] || fail 'syrogo-console binary missing from archive'
   template="$(find "$extract" -type f -path '*/deploy/systemd/syrogo-console.service' | head -n1)"
   [ -n "$template" ] || fail 'systemd template missing from archive'
+  resolve_listen
   $ID "$SERVICE_USER" >/dev/null 2>&1 || $USERADD --system --home-dir "$INSTALL_ROOT" --shell /usr/sbin/nologin "$SERVICE_USER"
   install -d -m 0755 "$INSTALL_ROOT/bin" "$INSTALL_ROOT/dist" "$SYSTEMD_DIR"
   install -m 0755 "$source" "$INSTALL_ROOT/bin/syrogo-console"
   rm -rf "$INSTALL_ROOT/dist"; mkdir -p "$INSTALL_ROOT/dist"
   cp -a "$(dirname "$source")/dist/." "$INSTALL_ROOT/dist/"
-  sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" -e "s|__SERVICE_GROUP__|$SERVICE_GROUP|g" -e "s|__INSTALL_ROOT__|$INSTALL_ROOT|g" -e "s|__LISTEN__|$LISTEN|g" -e "s|__CORE_URL__|$CORE_URL|g" "$template" > "$UNIT_PATH"
+  sed -e "s|__SERVICE_USER__|$SERVICE_USER|g" -e "s|__SERVICE_GROUP__|$SERVICE_GROUP|g" -e "s|__INSTALL_ROOT__|$INSTALL_ROOT|g" -e "s|__ENV_FILE__|$ENV_FILE|g" -e "s|__CORE_URL__|$CORE_URL|g" "$template" > "$UNIT_PATH"
   chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_ROOT"
   "$SYSTEMCTL" daemon-reload
   "$SYSTEMCTL" enable syrogo-console.service >/dev/null
@@ -167,7 +260,7 @@ install_console() {
 uninstall_console() {
   "$SYSTEMCTL" stop syrogo-console.service >/dev/null 2>&1 || true
   "$SYSTEMCTL" disable syrogo-console.service >/dev/null 2>&1 || true
-  rm -f "$UNIT_PATH"; rm -rf "$INSTALL_ROOT"
+  rm -f "$UNIT_PATH" "$ENV_FILE"; rm -rf "$INSTALL_ROOT"
   "$SYSTEMCTL" daemon-reload
   log 'Console removed; Syrogo Core was not changed'
 }

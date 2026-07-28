@@ -339,6 +339,10 @@ export interface ProviderCheckRequest {
 
 export type RoutingStrategy = 'failover' | 'round_robin' | 'weighted_round_robin'
 
+export interface RouteModelMatch {
+  models: string[]
+}
+
 export interface RouteResource {
   name: string
   from_tags: string[]
@@ -347,16 +351,24 @@ export interface RouteResource {
   weights: Record<string, number>
   target_model: string
   model_map: Record<string, string>
+  match: RouteModelMatch | null
 }
 
 export interface RoutesResponse {
   items: RouteResource[]
+  order_revision?: string
 }
 
 export type RouteUpsertRequest = RouteResource
 
 export interface RouteDeleteRequest {
   name: string
+}
+
+export interface RouteReorderRequest {
+  from_index: number
+  to_index: number
+  expected_revision: string
 }
 
 export interface ProviderCheckResponse {

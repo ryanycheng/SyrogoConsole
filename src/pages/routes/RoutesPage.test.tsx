@@ -10,10 +10,10 @@ const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
 
 const routes: RouteResource[] = [
-  { name: 'primary', from_tags: ['shared', 'office'], to_tags: ['east'], strategy: 'failover', weights: {}, target_model: '', model_map: {} },
-  { name: 'fallback', from_tags: ['shared', 'mobile'], to_tags: ['west'], strategy: 'round_robin', weights: {}, target_model: 'claude-fixed', model_map: {} },
-  { name: 'catch-all', from_tags: ['legacy'], to_tags: ['east', 'west'], strategy: 'weighted_round_robin', weights: { east: 2, west: 1 }, target_model: '', model_map: { '*': 'claude-sonnet' } },
-  { name: 'context-states', from_tags: ['legacy'], to_tags: ['disabled', 'unmapped'], strategy: 'failover', weights: {}, target_model: '', model_map: {} },
+  { name: 'primary', from_tags: ['shared', 'office'], to_tags: ['east'], strategy: 'failover', weights: {}, target_model: '', model_map: {}, match: { models: ['claude-*'] } },
+  { name: 'fallback', from_tags: ['shared', 'mobile'], to_tags: ['west'], strategy: 'round_robin', weights: {}, target_model: 'claude-fixed', model_map: {}, match: null },
+  { name: 'catch-all', from_tags: ['legacy'], to_tags: ['east', 'west'], strategy: 'weighted_round_robin', weights: { east: 2, west: 1 }, target_model: '', model_map: { '*': 'claude-sonnet' }, match: { models: ['*'] } },
+  { name: 'context-states', from_tags: ['legacy'], to_tags: ['disabled', 'unmapped'], strategy: 'failover', weights: {}, target_model: '', model_map: {}, match: { models: ['legacy-model'] } },
 ]
 
 const options = {
@@ -44,12 +44,13 @@ function response(body: object, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
-function mockApi({ optionsStatus = 200, providersStatus = 200, mutationStatus = 200 }: { optionsStatus?: number; providersStatus?: number; mutationStatus?: number } = {}) {
+function mockApi({ optionsStatus = 200, providersStatus = 200, mutationStatus = 200, routesBody = { items: routes, order_revision: 'revision-7' }, reorderStatus = 200 }: { optionsStatus?: number; providersStatus?: number; mutationStatus?: number; routesBody?: object; reorderStatus?: number } = {}) {
   fetchMock.mockImplementation((input: RequestInfo | URL) => {
     const url = String(input)
-    if (url.endsWith('/admin/config/routes')) return Promise.resolve(response({ items: routes }))
+    if (url.endsWith('/admin/config/routes')) return Promise.resolve(response(routesBody))
     if (url.endsWith('/admin/config/options')) return Promise.resolve(response(optionsStatus === 200 ? options : { error: 'options offline' }, optionsStatus))
     if (url.endsWith('/admin/config/providers')) return Promise.resolve(response(providersStatus === 200 ? providers : { error: 'providers offline' }, providersStatus))
+    if (url.endsWith('/admin/config/routes/reorder')) return Promise.resolve(response(reorderStatus === 200 ? { ok: true, applied: true } : { error: 'Route order changed', error_code: 'route_order_conflict' }, reorderStatus))
     if (url.includes('/admin/config/route/')) return Promise.resolve(response(mutationStatus === 200 ? { ok: true, applied: true } : { error: 'Core rejected route' }, mutationStatus))
     return Promise.resolve(response({ ok: true, applied: true }))
   })
@@ -171,7 +172,7 @@ describe('RoutesPage', () => {
     expect(screen.queryByText('Orphaned')).not.toBeInTheDocument()
   })
 
-  it('preserves API order and original priority while warning about shadowed source tags and filtering', async () => {
+  it('preserves API order and original priority while explaining matcher-aware overlap and filtering', async () => {
     mockApi()
     renderPage()
 
@@ -181,8 +182,9 @@ describe('RoutesPage', () => {
     expect(primary).toHaveTextContent('#1')
     expect(fallback).toHaveTextContent('#2')
     expect(catchAll).toHaveTextContent('#3')
-    expect(fallback).toHaveTextContent('Shadowed by earlier rules: shared')
-    expect(primary).not.toHaveTextContent('Shadowed by earlier rules')
+    expect(fallback).toHaveTextContent('Overlapping source tags: shared. First matching model wins.')
+    expect(screen.getByText('context-states').closest('tr')).toHaveTextContent('Blocked by earlier fallback or * rules: legacy')
+    expect(primary).not.toHaveTextContent('Blocked by earlier')
 
     fireEvent.change(screen.getByLabelText('Search routes'), { target: { value: 'catch-all' } })
     expect(screen.queryByText('primary')).not.toBeInTheDocument()
@@ -206,8 +208,122 @@ describe('RoutesPage', () => {
       weights: {},
       target_model: '',
       model_map: {},
+      match: null,
     })
-    expect(Object.keys(requestBody('/route/upsert'))).toHaveLength(7)
+    expect(Object.keys(requestBody('/route/upsert'))).toHaveLength(8)
+  })
+
+  it('creates fallback and specific request model payloads and round-trips an edited matcher', async () => {
+    mockApi()
+    renderPage()
+    await openNewRoute()
+    await fillRequiredRoute('specific-route')
+    fireEvent.click(screen.getByText('Specific models'))
+    fireEvent.click(screen.getByRole('button', { name: 'Add pattern' }))
+    fireEvent.change(screen.getByLabelText('Request model pattern 1'), { target: { value: 'claude-*' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add pattern' }))
+    fireEvent.change(screen.getByLabelText('Request model pattern 2'), { target: { value: 'custom-model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(countRequests('/route/upsert')).toBe(1))
+    expect(requestBody('/route/upsert').match).toEqual({ models: ['claude-*', 'custom-model'] })
+
+    cleanup()
+    fetchMock.mockReset()
+    mockApi()
+    renderPage()
+    const row = (await screen.findByText('primary')).closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit route: primary' })
+    expect(within(dialog).getByLabelText('Request model pattern 1')).toHaveValue('claude-*')
+    fireEvent.change(within(dialog).getByLabelText('Request model pattern 1'), { target: { value: 'claude-sonnet-*' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(countRequests('/route/upsert')).toBe(1))
+    expect(requestBody('/route/upsert').match).toEqual({ models: ['claude-sonnet-*'] })
+  })
+
+  it('validates request model patterns without trimming or accepting duplicates and control characters', async () => {
+    mockApi()
+    renderPage()
+    await openNewRoute()
+    await fillRequiredRoute('invalid-match')
+    fireEvent.click(screen.getByText('Specific models'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Add at least one model pattern.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add pattern' }))
+    fireEvent.change(screen.getByLabelText('Request model pattern 1'), { target: { value: ' claude-*' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Model patterns cannot have leading or trailing whitespace.')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Request model pattern 1'), { target: { value: 'claude-*' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add pattern' }))
+    fireEvent.change(screen.getByLabelText('Request model pattern 2'), { target: { value: 'claude-*' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Model patterns must be unique.')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Request model pattern 2'), { target: { value: 'badmodel' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Model patterns cannot contain control characters.')).toBeInTheDocument()
+    expect(countRequests('/route/upsert')).toBe(0)
+  })
+
+  it('displays request models and includes them in search', async () => {
+    mockApi()
+    renderPage()
+    const primary = (await screen.findByText('primary')).closest('tr') as HTMLElement
+    const fallback = screen.getByText('fallback').closest('tr') as HTMLElement
+    expect(within(primary).getByText('Specific')).toBeInTheDocument()
+    expect(within(primary).getByText('claude-*')).toBeInTheDocument()
+    expect(within(fallback).getByText('Fallback')).toBeInTheDocument()
+    expect(within(fallback).getByText('Any otherwise unmatched model')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Search routes'), { target: { value: 'legacy-model' } })
+    expect(screen.getByText('context-states')).toBeInTheDocument()
+    expect(screen.queryByText('primary')).not.toBeInTheDocument()
+  })
+
+  it('reorders with global zero-based indexes and the current revision', async () => {
+    mockApi()
+    renderPage()
+    const button = await screen.findByRole('button', { name: 'Move fallback down' })
+    fireEvent.click(button)
+    await waitFor(() => expect(countRequests('/routes/reorder')).toBe(1))
+    expect(requestBody('/routes/reorder')).toEqual({ from_index: 1, to_index: 2, expected_revision: 'revision-7' })
+    await waitFor(() => expect(countRequests('/admin/config/routes')).toBeGreaterThan(1))
+  })
+
+  it('disables reorder while filters are active', async () => {
+    mockApi()
+    renderPage()
+    const down = await screen.findByRole('button', { name: 'Move fallback down' })
+    expect(down).toBeEnabled()
+    fireEvent.change(screen.getByLabelText('Search routes'), { target: { value: 'fallback' } })
+    expect(screen.getByRole('button', { name: 'Move fallback down' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Search routes'), { target: { value: '' } })
+    await chooseSingle('Strategy filter', 'round_robin')
+    expect(screen.getByRole('button', { name: 'Move fallback down' })).toBeDisabled()
+  })
+
+  it('refreshes and warns on a reorder revision conflict without optimistic movement', async () => {
+    mockApi({ reorderStatus: 409 })
+    renderPage()
+    const fallback = (await screen.findByText('fallback')).closest('tr') as HTMLElement
+    fireEvent.click(within(fallback).getByRole('button', { name: 'Move fallback up' }))
+    await waitFor(() => expect(countRequests('/routes/reorder')).toBe(1))
+    expect(screen.getByText('fallback').closest('tr')).toHaveTextContent('#2')
+    expect(await screen.findByText(/Route order changed in Core/)).toBeInTheDocument()
+    await waitFor(() => expect(countRequests('/admin/config/routes')).toBeGreaterThan(1))
+  })
+
+  it('normalizes missing match and disables sorting against an old Core without revision', async () => {
+    const legacyRoutes = routes.map(({ match: _match, ...route }) => route)
+    mockApi({ routesBody: { items: legacyRoutes } })
+    renderPage()
+    expect(await screen.findByText('Route ordering unavailable')).toBeInTheDocument()
+    expect(screen.getByText(/Upgrade Core to enable route ordering/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Move fallback up' })).toBeDisabled()
+    const primary = screen.getByText('primary').closest('tr') as HTMLElement
+    expect(within(primary).getByText('Fallback')).toBeInTheDocument()
+    fireEvent.click(within(primary).getByRole('button', { name: 'Edit' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit route: primary' })
+    expect(within(dialog).getByText('Fallback')).toBeInTheDocument()
   })
 
   it('creates weight inputs from selected destinations and sends exact weighted-round-robin weights', async () => {
@@ -228,7 +344,7 @@ describe('RoutesPage', () => {
     await waitFor(() => expect(countRequests('/route/upsert')).toBe(1))
     expect(requestBody('/route/upsert')).toEqual({
       name: 'weighted', from_tags: ['mobile'], to_tags: ['east', 'west'],
-      strategy: 'weighted_round_robin', weights: { east: 7, west: 3 }, target_model: '', model_map: {},
+      strategy: 'weighted_round_robin', weights: { east: 7, west: 3 }, target_model: '', model_map: {}, match: null,
     })
   })
 

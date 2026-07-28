@@ -35,13 +35,20 @@ curl -fsSL https://raw.githubusercontent.com/ryanycheng/SyrogoConsole/refs/heads
 
 已有 Core 需要监听 `127.0.0.1:23234`、通过 `/healthz`，并启用你掌握 token 的 Admin API。Console Server 只代理 `/admin/*`；Admin token 由浏览器发送，Server 不保存或注入 token。
 
-本机访问 `http://127.0.0.1:23233`。远程管理推荐：
+本机访问 `http://127.0.0.1:23233`。Console 监听配置持久化在 `/etc/syrogo-console.env`，普通升级不会覆盖；首次升级到支持该文件的版本时，安装器会从旧 systemd unit 迁移已有地址。首次安装或主动修改监听地址时可执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ryanycheng/SyrogoConsole/refs/heads/main/scripts/install.sh \
+  | sudo env SYROGO_CONSOLE_LISTEN=0.0.0.0:23233 bash
+```
+
+监听值必须包含固定端口 `23233`。远程管理优先推荐：
 
 ```bash
 ssh -L 23233:127.0.0.1:23233 user@server
 ```
 
-公网或跨主机长期访问应在 Console 外层配置 TLS 和访问控制，不要直接公开明文管理面。
+公网或跨主机长期访问应在 Console 外层配置 TLS、访问控制和防火墙，不要直接公开明文管理面。`--uninstall` 会一并删除 `/etc/syrogo-console.env`。
 
 完整场景与升级流程见 Syrogo 的 `docs/deploy.md` / `docs/deploy.zh-CN.md`。
 

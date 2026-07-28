@@ -3,10 +3,10 @@ import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, Card, Form, Input, Radio, Select, Space, Table, Tag, Tooltip, Typography } from '@arco-design/web-react'
 import type { TableColumnProps } from '@arco-design/web-react'
-import { IconDelete, IconEdit, IconPlus, IconRefresh } from '@arco-design/web-react/icon'
+import { IconArrowDown, IconArrowUp, IconDelete, IconEdit, IconPlus, IconRefresh } from '@arco-design/web-react/icon'
 import { apiGet, apiPost } from '../../api/client'
-import { errorMessage } from '../../api/errors'
-import type { ConfigMutationResponse, ConfigOptionsResponse, ProviderResource, ProvidersResponse, RouteDeleteRequest, RouteResource, RoutesResponse, RouteUpsertRequest, RoutingStrategy } from '../../api/types'
+import { ApiError, errorMessage } from '../../api/errors'
+import type { ConfigMutationResponse, ConfigOptionsResponse, ProviderResource, ProvidersResponse, RouteDeleteRequest, RouteReorderRequest, RouteResource, RoutesResponse, RouteUpsertRequest, RoutingStrategy } from '../../api/types'
 import { useFeedback } from '../../app/feedbackContext'
 import { PageDialog } from '../../components/PageDialog'
 import { useDialogPopupContainer } from '../../components/dialogPopupContainer'
@@ -14,10 +14,12 @@ import { useDialogPopupContainer } from '../../components/dialogPopupContainer'
 const AUTO_REFRESH_MS = 30_000
 const strategies: RoutingStrategy[] = ['failover', 'round_robin', 'weighted_round_robin']
 type ModelMode = 'passthrough' | 'fixed' | 'map'
+type MatchMode = 'fallback' | 'specific'
 type ValidationErrors = Record<string, string>
-type RouteRow = RouteResource & { priority: number; shadowedTags: string[] }
+type RouteRow = RouteResource & { priority: number; blockedTags: string[]; overlappingTags: string[] }
 type ModelMapRow = { id: number; source: string; target: string }
-type Draft = Omit<RouteResource, 'model_map'> & { modelMode: ModelMode; modelRows: ModelMapRow[] }
+type MatchRow = { id: number; pattern: string }
+type Draft = Omit<RouteResource, 'model_map' | 'match'> & { modelMode: ModelMode; modelRows: ModelMapRow[]; matchMode: MatchMode; matchRows: MatchRow[] }
 type SourceContext = { client: string; inbound: string; protocol: string; path: string }
 type DestinationContext = { name: string; protocol: string; enabled: boolean }
 type TagContextMap<T> = Map<string, T[]>
@@ -28,13 +30,14 @@ function HelpText({ children }: { children: ReactNode }) {
 }
 
 function emptyDraft(): Draft {
-  return { name: '', from_tags: [], to_tags: [], strategy: 'failover', weights: {}, target_model: '', modelMode: 'passthrough', modelRows: [] }
+  return { name: '', from_tags: [], to_tags: [], strategy: 'failover', weights: {}, target_model: '', modelMode: 'passthrough', modelRows: [], matchMode: 'fallback', matchRows: [] }
 }
 
 function draftFromRoute(route: RouteResource): Draft {
   const entries = Object.entries(route.model_map || {})
   const modelMode: ModelMode = entries.length ? 'map' : route.target_model ? 'fixed' : 'passthrough'
-  return { name: route.name, from_tags: [...route.from_tags], to_tags: [...route.to_tags], strategy: route.strategy, weights: { ...route.weights }, target_model: route.target_model, modelMode, modelRows: entries.map(([source, target], id) => ({ id, source, target })) }
+  const match = route.match || null
+  return { name: route.name, from_tags: [...route.from_tags], to_tags: [...route.to_tags], strategy: route.strategy, weights: { ...route.weights }, target_model: route.target_model, modelMode, modelRows: entries.map(([source, target], id) => ({ id, source, target })), matchMode: match ? 'specific' : 'fallback', matchRows: (match?.models || []).map((pattern, id) => ({ id, pattern })) }
 }
 
 function toPayload(draft: Draft): RouteUpsertRequest {
@@ -47,6 +50,7 @@ function toPayload(draft: Draft): RouteUpsertRequest {
     weights: draft.strategy === 'weighted_round_robin' ? Object.fromEntries(draft.to_tags.map((tag) => [tag, draft.weights[tag]])) : {},
     target_model: draft.modelMode === 'fixed' ? draft.target_model.trim() : '',
     model_map: modelMap,
+    match: draft.matchMode === 'specific' ? { models: draft.matchRows.map((row) => row.pattern) } : null,
   }
 }
 
@@ -59,6 +63,18 @@ function validateDraft(draft: Draft, editing: boolean, existingNames: string[], 
   if (!draft.to_tags.length) errors.to_tags = 'Select at least one destination tag.'
   else if (draft.to_tags.some((tag) => !destinationTags.includes(tag))) errors.to_tags = 'Remove destination tags that no longer exist.'
   if (!strategyOptions.includes(draft.strategy)) errors.strategy = 'Select a routing strategy.'
+  if (draft.matchMode === 'specific') {
+    if (!draft.matchRows.length) errors.match = 'Add at least one model pattern.'
+    const patterns = new Set<string>()
+    draft.matchRows.forEach((row, index) => {
+      const pattern = row.pattern
+      if (!pattern) errors[`match_${index}`] = 'Model pattern is required.'
+      else if (pattern !== pattern.trim()) errors[`match_${index}`] = 'Model patterns cannot have leading or trailing whitespace.'
+      else if (/\p{Cc}/u.test(pattern)) errors[`match_${index}`] = 'Model patterns cannot contain control characters.'
+      else if (patterns.has(pattern)) errors[`match_${index}`] = 'Model patterns must be unique.'
+      patterns.add(pattern)
+    })
+  }
   if (draft.strategy === 'weighted_round_robin') draft.to_tags.forEach((tag) => {
     if (!Number.isInteger(draft.weights[tag]) || draft.weights[tag] <= 0) errors[`weight_${tag}`] = 'Enter a positive integer.'
   })
@@ -156,6 +172,7 @@ function RouteEditor({ initial, sourceTags, destinationTags, validDestinationTag
     update({ to_tags: tags, weights })
   }
   function updateMapRow(index: number, patch: Partial<ModelMapRow>) { update({ modelRows: draft.modelRows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row) }) }
+  function updateMatchRow(index: number, pattern: string) { update({ matchRows: draft.matchRows.map((row, rowIndex) => rowIndex === index ? { ...row, pattern } : row) }) }
   return <PageDialog className="route-editor-dialog" title={editing ? `Edit route: ${initial?.name}` : 'New route'} onCancel={onCancel} footer={<><Button onClick={onCancel}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save</Button></>}>
     <HelpText>Rules are evaluated in the displayed order; saving updates this rule in place and does not reorder routes.</HelpText>
     {failure ? <Alert className="route-dialog-alert" type="error" title="Unable to save route" content={failure} /> : null}
@@ -165,9 +182,13 @@ function RouteEditor({ initial, sourceTags, destinationTags, validDestinationTag
         <Form.Item label="Strategy" validateStatus={errors.strategy ? 'error' : undefined} help={errors.strategy}><StrategySelect value={draft.strategy} options={strategyOptions} onChange={(strategy) => update({ strategy })} /></Form.Item>
       </div>
       <div className="route-form-grid">
-        <Form.Item label="From tags" validateStatus={errors.from_tags ? 'error' : undefined} help={errors.from_tags}><TagSelect label="From tags" value={draft.from_tags} options={sourceTags} contexts={sourceContexts} available kind="source" onChange={(from_tags) => update({ from_tags })} /><HelpText>First matching route wins. Overlap with an earlier rule makes these tags shadowed.</HelpText></Form.Item>
+        <Form.Item label="From tags" validateStatus={errors.from_tags ? 'error' : undefined} help={errors.from_tags}><TagSelect label="From tags" value={draft.from_tags} options={sourceTags} contexts={sourceContexts} available kind="source" onChange={(from_tags) => update({ from_tags })} /><HelpText>Rules sharing a source tag are checked in order; the first matching request model wins.</HelpText></Form.Item>
         <Form.Item label="To tags" validateStatus={errors.to_tags ? 'error' : undefined} help={errors.to_tags}><TagSelect label="To tags" value={draft.to_tags} options={destinationTags} contexts={destinationContexts} available={providersAvailable} kind="destination" onChange={changeToTags} /></Form.Item>
       </div>
+      <Card size="small" title="Request model match" className="route-subcard">
+        <Radio.Group value={draft.matchMode} onChange={(matchMode) => update({ matchMode })}><Radio value="fallback">Fallback</Radio><Radio value="specific">Specific models</Radio></Radio.Group>
+        {draft.matchMode === 'fallback' ? <HelpText>Matches any request model that was not matched by an earlier route with the same source tag.</HelpText> : <>{errors.match ? <Alert type="error" content={errors.match} /> : null}<div className="route-match-list">{draft.matchRows.map((row, index) => <div className="route-match-row" key={row.id}><Form.Item label={`Pattern ${index + 1}`} validateStatus={errors[`match_${index}`] ? 'error' : undefined} help={errors[`match_${index}`]}><ModelInput label={`Request model pattern ${index + 1}`} value={row.pattern} suggestions={modelSuggestions} onChange={(pattern) => updateMatchRow(index, pattern)} /></Form.Item><Button aria-label={`Delete request model pattern ${index + 1}`} status="danger" icon={<IconDelete />} onClick={() => update({ matchRows: draft.matchRows.filter((_, rowIndex) => rowIndex !== index) })} /></div>)}</div><Button icon={<IconPlus />} onClick={() => update({ matchRows: [...draft.matchRows, { id: nextId.current++, pattern: '' }] })}>Add pattern</Button><HelpText>Free input is allowed; provider models are suggestions. * is a wildcard.</HelpText></>}
+      </Card>
       {draft.strategy === 'weighted_round_robin' ? <Card size="small" title="Destination weights" className="route-subcard"><div className="route-weight-grid">{draft.to_tags.map((tag) => <Form.Item key={tag} label={tag} validateStatus={errors[`weight_${tag}`] ? 'error' : undefined} help={errors[`weight_${tag}`]}><Input aria-label={`Weight for ${tag}`} type="number" min="1" step="1" value={String(draft.weights[tag] ?? 1)} onChange={(value) => update({ weights: { ...draft.weights, [tag]: Number(value) } })} /></Form.Item>)}</div><HelpText>Each selected destination requires a positive integer weight.</HelpText></Card> : null}
       <Card size="small" title="Model handling" className="route-subcard">
         <Radio.Group value={draft.modelMode} onChange={(modelMode) => update({ modelMode })}><Radio value="passthrough">Passthrough</Radio><Radio value="fixed">Fixed</Radio><Radio value="map">Map</Radio></Radio.Group>
@@ -191,6 +212,11 @@ function DeleteRouteDialog({ route, deleting, failure, onCancel, onDelete }: { r
 function contextualTagList(tags: string[], contexts: TagContextMap<SourceContext> | TagContextMap<DestinationContext>, available: boolean, kind: ContextKind) {
   return <div className="route-tag-list">{tags.map((tag) => <ContextTag key={tag} tag={tag} contexts={contexts.get(tag) || []} available={available} kind={kind} />)}</div>
 }
+function requestModels(route: RouteResource) {
+  if (!route.match) return <div className="route-match-summary"><Tag color="gray">Fallback</Tag><Typography.Text type="secondary">Any otherwise unmatched model</Typography.Text></div>
+  return <div className="route-match-summary"><Tag color="arcoblue">Specific</Tag>{route.match.models.map((pattern) => <code key={pattern}>{pattern}</code>)}</div>
+}
+
 function modelHandling(route: RouteResource) {
   if (Object.keys(route.model_map || {}).length) return <div className="route-model-summary"><Tag color="purple">map</Tag>{Object.entries(route.model_map).map(([source, target]) => <span key={source}><code>{source}</code> → <code>{target}</code></span>)}</div>
   if (route.target_model) return <div><Tag color="arcoblue">fixed</Tag><code>{route.target_model}</code></div>
@@ -216,6 +242,7 @@ export function RoutesPage() {
   const mutationApplied = async (result: ConfigMutationResponse) => { await Promise.all([queryClient.invalidateQueries({ queryKey: ['routes'] }), queryClient.invalidateQueries({ queryKey: ['config-options'] })]); return result }
   const upsert = useMutation({ mutationFn: (payload: RouteUpsertRequest) => apiPost<ConfigMutationResponse>('/admin/config/route/upsert', payload), onSuccess: mutationApplied })
   const remove = useMutation({ mutationFn: (payload: RouteDeleteRequest) => apiPost<ConfigMutationResponse>('/admin/config/route/delete', payload), onSuccess: mutationApplied })
+  const reorder = useMutation({ mutationFn: (payload: RouteReorderRequest) => apiPost<ConfigMutationResponse>('/admin/config/routes/reorder', payload) })
 
   const sourceTags = useMemo(() => [...new Set(optionsQuery.data?.client_tags || [])].sort(), [optionsQuery.data])
   const destinationTags = useMemo(() => [...new Set(optionsQuery.data?.outbound_tags || optionsQuery.data?.outbounds?.map((item) => item.tag) || [])].sort(), [optionsQuery.data])
@@ -246,33 +273,57 @@ export function RoutesPage() {
   const strategyOptions = useMemo(() => optionsQuery.data?.routing_strategies?.filter((strategy) => strategies.includes(strategy)) || strategies, [optionsQuery.data])
   const modelSuggestions = useMemo(() => [...new Set((providersQuery.data?.items || []).flatMap((provider: ProviderResource) => (provider.models || []).flatMap((model) => [model.name, ...model.aliases])).map((value) => value.trim()).filter(Boolean))].sort(), [providersQuery.data])
   const allRows = useMemo<RouteRow[]>(() => {
+    const blockers = new Set<string>()
     const seen = new Set<string>()
     return (routesQuery.data?.items || []).map((route, index) => {
-      const normalized = { ...route, from_tags: route.from_tags || [], to_tags: route.to_tags || [], weights: route.weights || {}, target_model: route.target_model || '', model_map: route.model_map || {} }
-      const shadowedTags = normalized.from_tags.filter((tag) => seen.has(tag))
-      normalized.from_tags.forEach((tag) => seen.add(tag))
-      return { ...normalized, priority: index + 1, shadowedTags }
+      const normalized: RouteResource = { ...route, from_tags: route.from_tags || [], to_tags: route.to_tags || [], weights: route.weights || {}, target_model: route.target_model || '', model_map: route.model_map || {}, match: route.match || null }
+      const blockedTags = normalized.from_tags.filter((tag) => blockers.has(tag))
+      const overlappingTags = normalized.from_tags.filter((tag) => seen.has(tag) && !blockers.has(tag))
+      normalized.from_tags.forEach((tag) => {
+        seen.add(tag)
+        if (!normalized.match || normalized.match.models.includes('*')) blockers.add(tag)
+      })
+      return { ...normalized, priority: index + 1, blockedTags, overlappingTags }
     })
   }, [routesQuery.data])
   const rows = useMemo(() => {
     const needle = search.trim().toLowerCase()
-    return allRows.filter((route) => (!needle || [route.name, ...route.from_tags, ...route.to_tags, route.strategy, route.target_model, ...Object.keys(route.model_map || {}), ...Object.values(route.model_map || {})].some((value) => value.toLowerCase().includes(needle))) && (strategyFilter === 'all' || route.strategy === strategyFilter))
+    return allRows.filter((route) => (!needle || [route.name, ...route.from_tags, ...route.to_tags, route.strategy, route.target_model, ...(route.match?.models || []), ...Object.keys(route.model_map || {}), ...Object.values(route.model_map || {})].some((value) => value.toLowerCase().includes(needle))) && (strategyFilter === 'all' || route.strategy === strategyFilter))
   }, [allRows, search, strategyFilter])
+  const filtersActive = Boolean(search.trim()) || strategyFilter !== 'all'
+  const orderRevision = routesQuery.data?.order_revision
+  const mutationPending = upsert.isPending || remove.isPending || reorder.isPending
+  const reorderUnavailableReason = filtersActive ? 'Clear search and strategy filters to reorder routes.' : !orderRevision ? 'Upgrade Core to enable route ordering.' : undefined
+
+  async function moveRoute(row: RouteRow, direction: -1 | 1) {
+    if (!orderRevision || filtersActive || mutationPending) return
+    try {
+      const result = await reorder.mutateAsync({ from_index: row.priority - 1, to_index: row.priority - 1 + direction, expected_revision: orderRevision })
+      await queryClient.invalidateQueries({ queryKey: ['routes'] })
+      if (!result.applied) { feedback.warning(result.reason || 'Core did not apply the route order change.'); return }
+      feedback.success('Route priority updated.')
+    } catch (error) {
+      await queryClient.invalidateQueries({ queryKey: ['routes'] })
+      if (error instanceof ApiError && error.status === 409 && error.errorCode === 'route_order_conflict') feedback.warning('Route order changed in Core. The latest order has been refreshed; try again.')
+      else feedback.error(errorMessage(error))
+    }
+  }
 
   const columns: TableColumnProps<RouteRow>[] = [
-    { title: '#', width: 65, fixed: 'left', render: (_, row) => <Typography.Text bold>#{row.priority}</Typography.Text> },
+    { title: '#', width: 115, fixed: 'left', render: (_, row) => <div className="route-priority"><Typography.Text bold>#{row.priority}</Typography.Text><Space size={2}><Button aria-label={`Move ${row.name} up`} size="mini" icon={<IconArrowUp />} disabled={row.priority === 1 || Boolean(reorderUnavailableReason) || mutationPending} title={reorderUnavailableReason} onClick={() => void moveRoute(row, -1)} /><Button aria-label={`Move ${row.name} down`} size="mini" icon={<IconArrowDown />} disabled={row.priority === allRows.length || Boolean(reorderUnavailableReason) || mutationPending} title={reorderUnavailableReason} onClick={() => void moveRoute(row, 1)} /></Space></div> },
     { title: 'Name', width: 170, render: (_, row) => <Typography.Text bold>{row.name}</Typography.Text> },
-    { title: 'From tags', width: 300, render: (_, row) => <div>{contextualTagList(row.from_tags, sourceContexts, Boolean(optionsQuery.data) && !optionsQuery.isError, 'source')}{row.shadowedTags.length ? <Alert className="route-shadow-warning" type="warning" content={`Shadowed by earlier rules: ${row.shadowedTags.join(', ')}`} /> : null}</div> },
+    { title: 'From tags', width: 320, render: (_, row) => <div>{contextualTagList(row.from_tags, sourceContexts, Boolean(optionsQuery.data) && !optionsQuery.isError, 'source')}{row.blockedTags.length ? <Alert className="route-shadow-warning" type="warning" content={`Blocked by earlier fallback or * rules: ${row.blockedTags.join(', ')}`} /> : null}{row.overlappingTags.length ? <Alert className="route-match-note" type="info" content={`Overlapping source tags: ${row.overlappingTags.join(', ')}. First matching model wins.`} /> : null}</div> },
+    { title: 'Request models', width: 220, render: (_, row) => requestModels(row) },
     { title: 'Destinations', width: 370, render: (_, row) => <div className="route-destination"><Tag color="arcoblue">{row.strategy}</Tag>{contextualTagList(row.to_tags, destinationContexts, Boolean(providersQuery.data) && !providersQuery.isError, 'destination')}{row.strategy === 'weighted_round_robin' ? <Typography.Text type="secondary">{row.to_tags.map((tag) => `${tag}: ${row.weights[tag]}`).join(' · ')}</Typography.Text> : null}</div> },
     { title: 'Model handling', width: 300, render: (_, row) => modelHandling(row) },
-    { title: 'Actions', width: 170, fixed: 'right', render: (_, row) => <Space size={4}><Button size="mini" icon={<IconEdit />} disabled={!optionsQuery.data} title={!optionsQuery.data ? 'Configuration options are unavailable.' : undefined} onClick={() => { setDirty(false); setMutationFailure(''); setEditing(row) }}>Edit</Button><Button size="mini" status="danger" disabled={allRows.length <= 1} title={allRows.length <= 1 ? 'The last route cannot be deleted.' : undefined} onClick={() => { setMutationFailure(''); setDeleting(row) }}>Delete</Button></Space> },
+    { title: 'Actions', width: 170, fixed: 'right', render: (_, row) => <Space size={4}><Button size="mini" icon={<IconEdit />} disabled={!optionsQuery.data || mutationPending} title={!optionsQuery.data ? 'Configuration options are unavailable.' : undefined} onClick={() => { setDirty(false); setMutationFailure(''); setEditing(row) }}>Edit</Button><Button size="mini" status="danger" disabled={allRows.length <= 1 || mutationPending} title={allRows.length <= 1 ? 'The last route cannot be deleted.' : undefined} onClick={() => { setMutationFailure(''); setDeleting(row) }}>Delete</Button></Space> },
   ]
 
   const routesRefetch = routesQuery.refetch
   const optionsRefetch = optionsQuery.refetch
   const providersRefetch = providersQuery.refetch
   const refreshAll = useCallback(async () => { await Promise.all([routesRefetch(), optionsRefetch(), providersRefetch()]) }, [routesRefetch, optionsRefetch, providersRefetch])
-  const blocked = editing !== undefined || deleting !== undefined || confirmDirtyCancel || dirty || upsert.isPending || remove.isPending || routesQuery.isFetching || optionsQuery.isFetching || providersQuery.isFetching
+  const blocked = editing !== undefined || deleting !== undefined || confirmDirtyCancel || dirty || mutationPending || routesQuery.isFetching || optionsQuery.isFetching || providersQuery.isFetching
   const resetIdle = useCallback(() => { if (!blocked) setRefreshGeneration((value) => value + 1) }, [blocked])
   useEffect(() => { if (refreshTimer.current) clearTimeout(refreshTimer.current); if (blocked) return; refreshTimer.current = setTimeout(() => { void refreshAll() }, AUTO_REFRESH_MS); return () => { if (refreshTimer.current) clearTimeout(refreshTimer.current) } }, [blocked, refreshAll, refreshGeneration])
   function requestEditorClose() { if (dirty) setConfirmDirtyCancel(true); else { setMutationFailure(''); setEditing(undefined) } }
@@ -282,8 +333,9 @@ export function RoutesPage() {
     {routesQuery.isError ? <Alert type="error" title="Unable to load routes" content={errorMessage(routesQuery.error)} /> : null}
     {optionsQuery.isError ? <Alert type="error" title="Configuration options unavailable" content={`${errorMessage(optionsQuery.error)}. New and Edit are disabled; existing routes can still be deleted.`} /> : null}
     {providersQuery.isError ? <Alert type="warning" title="Provider model suggestions unavailable" content={`${errorMessage(providersQuery.error)}. Model fields still accept free input.`} /> : null}
+    {routesQuery.data && !orderRevision ? <Alert type="warning" title="Route ordering unavailable" content="Upgrade Core to enable route ordering. Routes can still be viewed and edited." /> : null}
     <Card bordered={false} className="toolbar-card"><Space wrap><Input.Search aria-label="Search routes" allowClear value={search} onChange={setSearch} placeholder="Search name, tags, or models" style={{ width: 310 }} /><Select aria-label="Strategy filter" value={strategyFilter} onChange={setStrategyFilter} style={{ width: 220 }}><Select.Option value="all">All strategies</Select.Option>{strategies.map((strategy) => <Select.Option key={strategy} value={strategy}>{strategy}</Select.Option>)}</Select><HelpText>Filtering preserves each rule’s original priority number.</HelpText></Space></Card>
-    <Card bordered={false} className="data-card panel-card" title="Ordered routing rules"><Table rowKey="name" loading={routesQuery.isLoading} columns={columns} data={rows} pagination={false} scroll={{ x: 1375 }} /></Card>
+    <Card bordered={false} className="data-card panel-card" title="Ordered routing rules"><Table rowKey="name" loading={routesQuery.isLoading} columns={columns} data={rows} pagination={false} scroll={{ x: 1665 }} /></Card>
     {editing !== undefined && optionsQuery.data ? <RouteEditor key={editing?.name || 'new'} initial={editing || undefined} sourceTags={[...new Set([...sourceTags, ...(editing?.from_tags || [])])]} destinationTags={[...new Set([...destinationTags, ...(editing?.to_tags || [])])]} validDestinationTags={destinationTags} sourceContexts={sourceContexts} destinationContexts={destinationContexts} providersAvailable={Boolean(providersQuery.data) && !providersQuery.isError} strategyOptions={strategyOptions} modelSuggestions={modelSuggestions} existingNames={allRows.map((row) => row.name)} saving={upsert.isPending} failure={mutationFailure} onDirtyChange={setDirty} onCancel={requestEditorClose} onSave={async (payload) => { setMutationFailure(''); try { const result = await upsert.mutateAsync(payload); if (!result.applied) { setMutationFailure(result.reason || 'Core accepted the request but did not apply the route.'); feedback.warning('Core did not apply the route change.'); return } setDirty(false); setEditing(undefined); feedback.success('Route saved and applied.') } catch (error) { const message = errorMessage(error); setMutationFailure(message); feedback.error(message) } }} /> : null}
     {confirmDirtyCancel ? <DirtyCancelDialog onKeep={() => setConfirmDirtyCancel(false)} onDiscard={() => { setConfirmDirtyCancel(false); setDirty(false); setMutationFailure(''); setEditing(undefined) }} /> : null}
     {deleting ? <DeleteRouteDialog route={deleting} deleting={remove.isPending} failure={mutationFailure} onCancel={() => { setMutationFailure(''); setDeleting(undefined) }} onDelete={async () => { setMutationFailure(''); try { const result = await remove.mutateAsync({ name: deleting.name }); if (!result.applied) { setMutationFailure(result.reason || 'Core accepted the request but did not apply the deletion.'); feedback.warning('Core did not apply the route deletion.'); return } setDeleting(undefined); feedback.success('Route deleted and applied.') } catch (error) { const message = errorMessage(error); setMutationFailure(message); feedback.error(message) } }} /> : null}
